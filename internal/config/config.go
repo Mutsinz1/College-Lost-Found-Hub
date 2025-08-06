@@ -1,0 +1,118 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/joho/godotenv"
+)
+
+type Config struct {
+	Server   ServerConfig
+	Database DatabaseConfig
+	JWT      JWTConfig
+	Upload   UploadConfig
+	Email    EmailConfig
+}
+
+type ServerConfig struct {
+	Port        string
+	Environment string
+	Host        string
+}
+
+type DatabaseConfig struct {
+	URL string
+}
+
+type JWTConfig struct {
+	Secret     string
+	Expiration time.Duration
+}
+
+type UploadConfig struct {
+	Dir        string
+	MaxSize    int64
+	AllowedTypes []string
+}
+
+type EmailConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+}
+
+func Load() (*Config, error) {
+	// Load .env file if it exists
+	if err := godotenv.Load(); err != nil {
+		// Don't return error if .env doesn't exist
+		fmt.Println("No .env file found, using environment variables")
+	}
+
+	config := &Config{
+		Server: ServerConfig{
+			Port:        getEnv("PORT", "8080"),
+			Environment: getEnv("ENVIRONMENT", "development"),
+			Host:        getEnv("HOST", "localhost"),
+		},
+		Database: DatabaseConfig{
+			URL: getEnv("DATABASE_URL", "postgres://lostfound_user:lostfound_password@localhost:5432/lostfound?sslmode=disable"),
+		},
+		JWT: JWTConfig{
+			Secret:     getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
+			Expiration: getEnvAsDuration("JWT_EXPIRATION", 24*time.Hour),
+		},
+		Upload: UploadConfig{
+			Dir:         getEnv("UPLOAD_DIR", "./uploads"),
+			MaxSize:     getEnvAsInt64("MAX_FILE_SIZE", 10*1024*1024), // 10MB
+			AllowedTypes: []string{".jpg", ".jpeg", ".png", ".gif", ".webp"},
+		},
+		Email: EmailConfig{
+			Host:     getEnv("SMTP_HOST", ""),
+			Port:     getEnvAsInt("SMTP_PORT", 587),
+			Username: getEnv("SMTP_USERNAME", ""),
+			Password: getEnv("SMTP_PASSWORD", ""),
+			From:     getEnv("SMTP_FROM", "noreply@lostfound.com"),
+		},
+	}
+
+	return config, nil
+}
+
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func getEnvAsInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsInt64(key string, defaultValue int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			return duration
+		}
+	}
+	return defaultValue
+} 
