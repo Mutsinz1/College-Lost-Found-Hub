@@ -57,11 +57,17 @@ export const areasAPI = {
 
 // User API
 export const usersAPI = {
-  // Get or create user via SSO
-  getOrCreate: (ssoUser) => api.post('/users/sso', ssoUser),
-  
   // Get user by ID
   getById: (id) => api.get(`/users/${id}`),
+};
+
+// Auth API
+export const authAPI = {
+  // Sign in with a Google ID token (from Google Identity Services)
+  googleLogin: (credential) => api.post('/auth/google', { credential }),
+
+  // Development-only login (backend mounts this only when ENVIRONMENT=development)
+  devLogin: (email, name) => api.post('/auth/dev-login', { email, name }),
 };
 
 // Posts API
@@ -164,20 +170,27 @@ export const removeEditToken = (postId) => {
   localStorage.setItem(EDIT_TOKENS_KEY, JSON.stringify(tokens));
 };
 
-// SSO utilities
-export const handleSSOLogin = async (ssoUser) => {
-  try {
-    const response = await usersAPI.getOrCreate(ssoUser);
-    if (response.success) {
-      // Save user info to localStorage
-      localStorage.setItem('user', JSON.stringify(response.data.user));
-      return response.data.user;
-    }
-    throw new Error(response.error || 'Failed to authenticate');
-  } catch (error) {
-    console.error('SSO login error:', error);
-    throw error;
+// Sign-in helpers: store the session token + user returned by the backend
+const storeSession = (data) => {
+  saveAuthToken(data.token);
+  localStorage.setItem('user', JSON.stringify(data.user));
+  return data.user;
+};
+
+export const loginWithGoogle = async (credential) => {
+  const response = await authAPI.googleLogin(credential);
+  if (response.success) {
+    return storeSession(response.data);
   }
+  throw new Error(response.error || 'Failed to sign in');
+};
+
+export const loginDev = async (email, name) => {
+  const response = await authAPI.devLogin(email, name);
+  if (response.success) {
+    return storeSession(response.data);
+  }
+  throw new Error(response.error || 'Failed to sign in');
 };
 
 export const getCurrentUser = () => {
@@ -198,17 +211,6 @@ export const logout = () => {
   localStorage.removeItem('auth_token');
   // Edit tokens are intentionally kept: they prove ownership of posts
   // independently of login state.
-};
-
-// Mock SSO for development (replace with actual SSO integration)
-export const mockSSOLogin = async () => {
-  const mockUser = {
-    sso_id: 'mock_sso_123',
-    email: 'student@college.edu',
-    name: 'John Student',
-  };
-  
-  return await handleSSOLogin(mockUser);
 };
 
 export default api; 

@@ -41,6 +41,7 @@ func main() {
 
 	// Initialize handlers
 	handlers := api.NewHandler(repo, imgProcessor)
+	authHandlers := api.NewAuthHandler(repo, cfg)
 
 	// Create router
 	r := chi.NewRouter()
@@ -64,23 +65,35 @@ func main() {
 
 	// API routes
 	r.Route("/api", func(r chi.Router) {
+		// Parse session tokens (when present) for all API routes
+		r.Use(api.Middleware(cfg.JWT.Secret))
+
+		// Auth routes
+		r.Route("/auth", func(r chi.Router) {
+			r.Post("/google", authHandlers.GoogleLogin)
+			if cfg.Server.Environment == "development" {
+				// Dev-only login that replaces the old unauthenticated
+				// /users/sso endpoint (which trusted client-sent identities)
+				r.Post("/dev-login", authHandlers.DevLogin)
+			}
+		})
+
 		// Building routes
 		r.Route("/buildings", func(r chi.Router) {
 			r.Get("/", handlers.GetBuildings)
 			r.Get("/{id}", handlers.GetBuildingByID)
-			r.Post("/", handlers.CreateBuilding) // Admin only
+			r.With(api.RequireAdmin).Post("/", handlers.CreateBuilding)
 		})
 
 		// Lost & Found Area routes
 		r.Route("/areas", func(r chi.Router) {
 			r.Get("/", handlers.GetLostFoundAreas)
 			r.Get("/building/{buildingId}", handlers.GetLostFoundAreasByBuilding)
-			r.Post("/", handlers.CreateLostFoundArea) // Admin only
+			r.With(api.RequireAdmin).Post("/", handlers.CreateLostFoundArea)
 		})
 
 		// User routes
 		r.Route("/users", func(r chi.Router) {
-			r.Post("/sso", handlers.GetOrCreateUser)
 			r.Get("/{id}", handlers.GetUserByID)
 		})
 

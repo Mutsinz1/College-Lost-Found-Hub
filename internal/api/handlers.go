@@ -222,27 +222,6 @@ func (h *Handler) CreateLostFoundArea(w http.ResponseWriter, r *http.Request) {
 
 // User handlers
 
-// GetOrCreateUser handles SSO user creation/retrieval
-func (h *Handler) GetOrCreateUser(w http.ResponseWriter, r *http.Request) {
-	var ssoUser database.SSOUser
-	if err := json.NewDecoder(r.Body).Decode(&ssoUser); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
-		return
-	}
-	if strings.TrimSpace(ssoUser.SSOID) == "" || strings.TrimSpace(ssoUser.Email) == "" {
-		writeError(w, http.StatusBadRequest, "sso_id and email are required", nil)
-		return
-	}
-
-	user, err := h.repo.GetOrCreateUser(r.Context(), ssoUser)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to get or create user", err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, database.UserResponse{User: *user})
-}
-
 // GetUserByID returns a specific user
 func (h *Handler) GetUserByID(w http.ResponseWriter, r *http.Request) {
 	userID, err := uuid.Parse(chi.URLParam(r, "id"))

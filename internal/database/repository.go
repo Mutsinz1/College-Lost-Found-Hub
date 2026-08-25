@@ -305,10 +305,13 @@ func (r *Repository) GetOrCreateUser(ctx context.Context, ssoUser SSOUser) (*Use
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
-	// Create new user
+	// Create new user. If a user with this email already exists (e.g. they
+	// previously signed in through a different SSO path), relink it instead
+	// of failing on the unique email constraint.
 	createQuery := `
 		INSERT INTO users (sso_id, email, name)
 		VALUES ($1, $2, $3)
+		ON CONFLICT (email) DO UPDATE SET sso_id = EXCLUDED.sso_id, name = EXCLUDED.name, updated_at = now()
 		RETURNING id, sso_id, email, name, role, is_active, created_at, updated_at`
 
 	err = r.db.QueryRow(ctx, createQuery, ssoUser.SSOID, ssoUser.Email, ssoUser.Name).Scan(
