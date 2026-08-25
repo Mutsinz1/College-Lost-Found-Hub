@@ -63,6 +63,15 @@ func (db *DB) Exec(ctx context.Context, sql string, arguments ...interface{}) er
 	return err
 }
 
+// ExecRows executes a query and returns the number of rows affected
+func (db *DB) ExecRows(ctx context.Context, sql string, arguments ...interface{}) (int64, error) {
+	tag, err := db.pool.Exec(ctx, sql, arguments...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Query executes a query and returns rows
 func (db *DB) Query(ctx context.Context, sql string, arguments ...interface{}) (pgx.Rows, error) {
 	return db.pool.Query(ctx, sql, arguments...)

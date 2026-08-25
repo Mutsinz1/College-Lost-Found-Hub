@@ -2,10 +2,22 @@ package database
 
 import (
 	"context"
+	"crypto/subtle"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+)
+
+// Sentinel errors returned by repository operations so handlers can map
+// them to proper HTTP status codes without string matching.
+var (
+	// ErrNotFound indicates the requested row does not exist.
+	ErrNotFound = errors.New("not found")
+	// ErrInvalidEditToken indicates the supplied edit token does not match the post's token.
+	ErrInvalidEditToken = errors.New("invalid edit token")
 )
 
 // Repository provides database operations
@@ -395,39 +407,92 @@ func (r *Repository) CreatePost(ctx context.Context, req CreatePostRequest, user
 
 // SearchPosts searches for posts with various filters
 func (r *Repository) SearchPosts(ctx context.Context, req SearchPostsRequest) (*SearchPostsResponse, error) {
-	// Set default limit
+	// Clamp pagination
 	if req.Limit <= 0 {
 		req.Limit = 50
 	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	if req.Offset < 0 {
+		req.Offset = 0
+	}
 
-	// Simple count query
-	countQuery := `
-		SELECT COUNT(*)
-		FROM posts p
-		WHERE p.status = 'active' AND p.expires_at > now()`
+	// Build WHERE clause dynamically from the request filters
+	where := []string{"p.status = 'active'", "p.expires_at > now()"}
+	args := []interface{}{}
+	arg := func(v interface{}) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	if req.Type != "" {
+		where = append(where, "p.type = "+arg(req.Type)+"::post_type")
+	}
+	if req.Category != "" {
+		where = append(where, "p.category = "+arg(req.Category)+"::post_category")
+	}
+	if req.LostFoundAreaID != nil {
+		where = append(where, "p.lost_found_area_id = "+arg(*req.LostFoundAreaID))
+	}
+	if req.BuildingID != nil {
+		where = append(where, "p.lost_found_area_id IN (SELECT id FROM lost_found_areas WHERE building_id = "+arg(*req.BuildingID)+")")
+	}
+	if req.IsLostItem != nil {
+		where = append(where, "p.is_lost_item = "+arg(*req.IsLostItem))
+	}
+
+	// Geospatial filter: only applied when a location is provided
+	hasGeo := req.Latitude != 0 || req.Longitude != 0
+	if hasGeo && req.Radius > 0 {
+		where = append(where, fmt.Sprintf(
+			"ST_DWithin(p.location, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)",
+			arg(req.Longitude), arg(req.Latitude), arg(req.Radius),
+		))
+	}
+
+	whereSQL := strings.Join(where, " AND ")
+
+	// Count query shares the WHERE clause and args
+	countQuery := "SELECT COUNT(*) FROM posts p WHERE " + whereSQL
 
 	var total int
-	err := r.db.QueryRow(ctx, countQuery).Scan(&total)
+	err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count posts: %w", err)
 	}
 
-	// Simple main query without parameters
+	// Main query gets its own copy of the args so the distance expression
+	// and pagination placeholders don't leak into the count query.
+	mainArgs := append([]interface{}{}, args...)
+	marg := func(v interface{}) string {
+		mainArgs = append(mainArgs, v)
+		return fmt.Sprintf("$%d", len(mainArgs))
+	}
+
+	distanceExpr := "0::float8"
+	orderBy := "p.created_at DESC"
+	if hasGeo {
+		distanceExpr = fmt.Sprintf(
+			"ST_Distance(p.location, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography)",
+			marg(req.Longitude), marg(req.Latitude),
+		)
+		orderBy = "distance ASC, p.created_at DESC"
+	}
+
 	query := `
 		SELECT p.id, p.type::text, p.category::text, p.title, p.description,
-		       ST_Y(p.location::geometry) as latitude, 
+		       ST_Y(p.location::geometry) as latitude,
 		       ST_X(p.location::geometry) as longitude,
 		       p.lost_found_area_id, p.posted_by, p.claimed_by, p.claimed_at, p.pickup_scheduled_at, p.picked_up_at,
-		       p.is_lost_item, p.status::text, p.contact_email, p.poster_name, p.edit_token, p.image_urls, p.expires_at, p.created_at, p.updated_at,
-		       0 as distance
+		       p.is_lost_item, p.status::text, p.contact_email, p.poster_name, p.image_urls, p.expires_at, p.created_at, p.updated_at,
+		       ` + distanceExpr + ` as distance
 		FROM posts p
-		WHERE p.status = 'active' AND p.expires_at > now()
-		ORDER BY p.created_at DESC
-		LIMIT 50 OFFSET 0`
+		WHERE ` + whereSQL + `
+		ORDER BY ` + orderBy + `
+		LIMIT ` + marg(req.Limit) + ` OFFSET ` + marg(req.Offset)
 
-	args := []interface{}{}
-
-	rows, err := r.db.Query(ctx, query, args...)
+	rows, err := r.db.Query(ctx, query, mainArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search posts: %w", err)
 	}
@@ -454,7 +519,6 @@ func (r *Repository) SearchPosts(ctx context.Context, req SearchPostsRequest) (*
 			&post.Status,
 			&post.ContactEmail,
 			&post.PosterName,
-			&post.EditToken,
 			&post.ImageURLs,
 			&post.ExpiresAt,
 			&post.CreatedAt,
@@ -482,7 +546,7 @@ func (r *Repository) GetPostByID(ctx context.Context, id uuid.UUID) (*Post, erro
 		       ST_Y(p.location::geometry) as latitude, 
 		       ST_X(p.location::geometry) as longitude,
 		       p.lost_found_area_id, p.posted_by, p.claimed_by, p.claimed_at, p.pickup_scheduled_at, p.picked_up_at,
-		       p.is_lost_item, p.status, p.contact_email, p.poster_name, p.edit_token, p.image_urls, p.expires_at, p.created_at, p.updated_at
+		       p.is_lost_item, p.status, p.contact_email, p.poster_name, p.image_urls, p.expires_at, p.created_at, p.updated_at
 		FROM posts p
 		WHERE p.id = $1`
 
@@ -505,7 +569,6 @@ func (r *Repository) GetPostByID(ctx context.Context, id uuid.UUID) (*Post, erro
 		&post.Status,
 		&post.ContactEmail,
 		&post.PosterName,
-		&post.EditToken,
 		&post.ImageURLs,
 		&post.ExpiresAt,
 		&post.CreatedAt,
@@ -524,23 +587,54 @@ func (r *Repository) GetPostByID(ctx context.Context, id uuid.UUID) (*Post, erro
 // ClaimPost claims a post for a user
 func (r *Repository) ClaimPost(ctx context.Context, postID, userID uuid.UUID) error {
 	query := `
-		UPDATE posts 
+		UPDATE posts
 		SET claimed_by = $1, claimed_at = now(), status = 'claimed'
 		WHERE id = $2 AND status = 'active' AND claimed_by IS NULL`
 
-	err := r.db.Exec(ctx, query, userID, postID)
+	rows, err := r.db.ExecRows(ctx, query, userID, postID)
 	if err != nil {
 		return fmt.Errorf("failed to claim post: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
 	}
 
 	return nil
 }
 
-// UpdatePost updates a post
-func (r *Repository) UpdatePost(ctx context.Context, id uuid.UUID, req UpdatePostRequest) error {
+// verifyEditToken checks that the supplied edit token matches the post's stored
+// token. Returns ErrNotFound if the post does not exist and ErrInvalidEditToken
+// if the token does not match. It also returns the post's image URLs so callers
+// can clean up files after a delete.
+func (r *Repository) verifyEditToken(ctx context.Context, id uuid.UUID, editToken string) ([]string, error) {
+	var storedToken string
+	var imageURLs []string
+	err := r.db.QueryRow(ctx, `SELECT edit_token, image_urls FROM posts WHERE id = $1`, id).Scan(&storedToken, &imageURLs)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to verify edit token: %w", err)
+	}
+	if subtle.ConstantTimeCompare([]byte(storedToken), []byte(editToken)) != 1 {
+		return nil, ErrInvalidEditToken
+	}
+	return imageURLs, nil
+}
+
+// UpdatePost updates a post after verifying the edit token.
+// Empty fields in the request leave the existing values untouched.
+func (r *Repository) UpdatePost(ctx context.Context, id uuid.UUID, editToken string, req UpdatePostRequest) error {
+	if _, err := r.verifyEditToken(ctx, id, editToken); err != nil {
+		return err
+	}
+
 	query := `
-		UPDATE posts 
-		SET title = $1, description = $2, status = $3, updated_at = now()
+		UPDATE posts
+		SET title = COALESCE(NULLIF($1, ''), title),
+		    description = COALESCE(NULLIF($2, ''), description),
+		    status = COALESCE(NULLIF($3, '')::post_status, status),
+		    updated_at = now()
 		WHERE id = $4`
 
 	err := r.db.Exec(ctx, query, req.Title, req.Description, req.Status, id)
@@ -551,25 +645,54 @@ func (r *Repository) UpdatePost(ctx context.Context, id uuid.UUID, req UpdatePos
 	return nil
 }
 
-// DeletePost deletes a post
-func (r *Repository) DeletePost(ctx context.Context, id uuid.UUID) error {
-	query := `DELETE FROM posts WHERE id = $1`
-
-	err := r.db.Exec(ctx, query, id)
+// DeletePost deletes a post after verifying the edit token.
+// It returns the post's image URLs so the caller can remove the files from disk.
+func (r *Repository) DeletePost(ctx context.Context, id uuid.UUID, editToken string) ([]string, error) {
+	imageURLs, err := r.verifyEditToken(ctx, id, editToken)
 	if err != nil {
-		return fmt.Errorf("failed to delete post: %w", err)
+		return nil, err
 	}
 
-	return nil
+	if err := r.db.Exec(ctx, `DELETE FROM posts WHERE id = $1`, id); err != nil {
+		return nil, fmt.Errorf("failed to delete post: %w", err)
+	}
+
+	return imageURLs, nil
 }
 
-// Cleanup expired posts
-func (r *Repository) CleanupExpiredPosts(ctx context.Context) (int, error) {
-	query := `DELETE FROM posts WHERE expires_at < now() AND status != 'resolved'`
-	err := r.db.Exec(ctx, query)
+// CleanupExpiredPosts deletes expired posts and returns how many were removed
+// along with the image URLs of the deleted posts so files can be cleaned up.
+func (r *Repository) CleanupExpiredPosts(ctx context.Context) (int, []string, error) {
+	rows, err := r.db.Query(ctx, `DELETE FROM posts WHERE expires_at < now() AND status != 'resolved' RETURNING image_urls`)
 	if err != nil {
-		return 0, fmt.Errorf("failed to cleanup expired posts: %w", err)
+		return 0, nil, fmt.Errorf("failed to cleanup expired posts: %w", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	var images []string
+	for rows.Next() {
+		var urls []string
+		if err := rows.Scan(&urls); err != nil {
+			return count, images, fmt.Errorf("failed to scan cleanup row: %w", err)
+		}
+		count++
+		images = append(images, urls...)
 	}
 
-	return 0, nil
+	return count, images, nil
+}
+
+// GetDefaultUserID returns the ID of the first active admin user. It is used as
+// a fallback author for posts until real authentication is wired up.
+func (r *Repository) GetDefaultUserID(ctx context.Context) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := r.db.QueryRow(ctx, `SELECT id FROM users WHERE role = 'admin' AND is_active = true ORDER BY created_at LIMIT 1`).Scan(&id)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return uuid.Nil, ErrNotFound
+		}
+		return uuid.Nil, fmt.Errorf("failed to get default user: %w", err)
+	}
+	return id, nil
 } 

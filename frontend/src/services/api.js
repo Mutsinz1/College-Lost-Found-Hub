@@ -94,11 +94,15 @@ export const postsAPI = {
     },
   }),
   
-  // Update post
-  update: (id, postData) => api.put(`/posts/${id}`, postData),
-  
-  // Delete post
-  delete: (id) => api.delete(`/posts/${id}`),
+  // Update post (requires the post's edit token)
+  update: (id, postData, editToken) => api.put(`/posts/${id}`, postData, {
+    headers: { 'X-Edit-Token': editToken || getEditToken(id) || '' },
+  }),
+
+  // Delete post (requires the post's edit token)
+  delete: (id, editToken) => api.delete(`/posts/${id}`, {
+    headers: { 'X-Edit-Token': editToken || getEditToken(id) || '' },
+  }),
   
   // Claim post
   claim: (id) => api.post(`/posts/${id}/claim`),
@@ -117,16 +121,31 @@ export const removeAuthToken = () => {
   localStorage.removeItem('auth_token');
 };
 
-export const saveEditToken = (token) => {
-  localStorage.setItem('edit_token', token);
+// Edit tokens are stored per post so users can manage every post they created
+const EDIT_TOKENS_KEY = 'edit_tokens';
+
+const readEditTokens = () => {
+  try {
+    return JSON.parse(localStorage.getItem(EDIT_TOKENS_KEY)) || {};
+  } catch {
+    return {};
+  }
 };
 
-export const getEditToken = () => {
-  return localStorage.getItem('edit_token');
+export const saveEditToken = (postId, token) => {
+  const tokens = readEditTokens();
+  tokens[postId] = token;
+  localStorage.setItem(EDIT_TOKENS_KEY, JSON.stringify(tokens));
 };
 
-export const removeEditToken = () => {
-  localStorage.removeItem('edit_token');
+export const getEditToken = (postId) => {
+  return readEditTokens()[postId] || null;
+};
+
+export const removeEditToken = (postId) => {
+  const tokens = readEditTokens();
+  delete tokens[postId];
+  localStorage.setItem(EDIT_TOKENS_KEY, JSON.stringify(tokens));
 };
 
 // SSO utilities
@@ -161,7 +180,8 @@ export const getCurrentUser = () => {
 export const logout = () => {
   localStorage.removeItem('user');
   localStorage.removeItem('auth_token');
-  localStorage.removeItem('edit_token');
+  // Edit tokens are intentionally kept: they prove ownership of posts
+  // independently of login state.
 };
 
 // Mock SSO for development (replace with actual SSO integration)

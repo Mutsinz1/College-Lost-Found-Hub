@@ -63,7 +63,7 @@ type Post struct {
 	Status           string    `json:"status"`
 	ContactEmail     *string   `json:"contact_email"`
 	PosterName       *string   `json:"poster_name"`
-	EditToken        string    `json:"edit_token"`
+	EditToken        string    `json:"edit_token,omitempty"`
 	ImageURLs        []string  `json:"image_urls"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	CreatedAt        time.Time `json:"created_at"`

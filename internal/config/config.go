@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -18,9 +19,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port        string
-	Environment string
-	Host        string
+	Port           string
+	Environment    string
+	Host           string
+	AllowedOrigins []string
 }
 
 type DatabaseConfig struct {
@@ -55,9 +57,10 @@ func Load() (*Config, error) {
 
 	config := &Config{
 		Server: ServerConfig{
-			Port:        getEnv("PORT", "8080"),
-			Environment: getEnv("ENVIRONMENT", "development"),
-			Host:        getEnv("HOST", "localhost"),
+			Port:           getEnv("PORT", "8080"),
+			Environment:    getEnv("ENVIRONMENT", "development"),
+			Host:           getEnv("HOST", "localhost"),
+			AllowedOrigins: getEnvAsSlice("ALLOWED_ORIGINS", []string{"http://localhost:3000", "http://localhost:3001"}),
 		},
 		Database: DatabaseConfig{
 			URL: getEnv("DATABASE_URL", "postgres://lostfound_user:lostfound_password@localhost:5432/lostfound?sslmode=disable"),
@@ -67,9 +70,11 @@ func Load() (*Config, error) {
 			Expiration: getEnvAsDuration("JWT_EXPIRATION", 24*time.Hour),
 		},
 		Upload: UploadConfig{
-			Dir:         getEnv("UPLOAD_DIR", "./uploads"),
-			MaxSize:     getEnvAsInt64("MAX_FILE_SIZE", 10*1024*1024), // 10MB
-			AllowedTypes: []string{".jpg", ".jpeg", ".png", ".gif", ".webp"},
+			Dir:     getEnv("UPLOAD_DIR", "./uploads"),
+			MaxSize: getEnvAsInt64("MAX_FILE_SIZE", 10*1024*1024), // 10MB
+			// .webp removed: the imaging library cannot decode/encode it,
+			// so webp uploads previously failed with a 500 at thumbnail time
+			AllowedTypes: []string{".jpg", ".jpeg", ".png", ".gif"},
 		},
 		Email: EmailConfig{
 			Host:     getEnv("SMTP_HOST", ""),
@@ -103,6 +108,22 @@ func getEnvAsInt64(key string, defaultValue int64) int64 {
 	if value := os.Getenv(key); value != "" {
 		if intValue, err := strconv.ParseInt(value, 10, 64); err == nil {
 			return intValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsSlice(key string, defaultValue []string) []string {
+	if value := os.Getenv(key); value != "" {
+		parts := strings.Split(value, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		if len(out) > 0 {
+			return out
 		}
 	}
 	return defaultValue
