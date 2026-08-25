@@ -20,3 +20,11 @@ require (
 	golang.org/x/sync v0.3.0 // indirect
 	golang.org/x/text v0.13.0 // indirect
 )
+
+replace golang.org/x/crypto => github.com/golang/crypto v0.13.0
+
+replace golang.org/x/text => github.com/golang/text v0.13.0
+
+replace golang.org/x/sync => github.com/golang/sync v0.3.0
+
+replace golang.org/x/image => github.com/golang/image v0.12.0

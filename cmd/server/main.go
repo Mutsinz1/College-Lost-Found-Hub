@@ -92,7 +92,12 @@ func main() {
 			r.Put("/{id}", handlers.UpdatePost)
 			r.Delete("/{id}", handlers.DeletePost)
 			r.Post("/{id}/claim", handlers.ClaimPost)
+			r.Post("/{id}/interactions", handlers.CreateInteraction)
+			r.Get("/{id}/interactions", handlers.GetPostInteractions)
 		})
+
+		// Interaction routes
+		r.Put("/interactions/{id}", handlers.UpdateInteraction)
 	})
 
 	// Serve static files (uploads)

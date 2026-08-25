@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import { MapPin, Search, Filter, Building, Map } from 'lucide-react';
 import { postsAPI, buildingsAPI, areasAPI } from '../services/api';
-import toast from 'react-hot-toast';
 
 const Home = () => {
   const [posts, setPosts] = useState([]);
@@ -122,22 +122,6 @@ const Home = () => {
       return type === 'lost' ? '#ef4444' : '#10b981'; // Red for lost, green for found
     }
     return type === 'lost' ? '#f97316' : '#3b82f6'; // Orange for lost, blue for found
-  };
-
-  const handleClaim = async (postId) => {
-    try {
-      const response = await postsAPI.claim(postId);
-      if (response.success) {
-        toast.success('Item claimed successfully! Contact the lost & found area to arrange pickup.');
-        // Refresh posts to update status
-        searchPosts();
-      } else {
-        toast.error(response.error || 'Failed to claim item');
-      }
-    } catch (error) {
-      console.error('Error claiming post:', error);
-      toast.error('Failed to claim item. Please try again.');
-    }
   };
 
   if (!userLocation) {
@@ -365,14 +349,12 @@ const Home = () => {
                     <p className="text-xs text-gray-500 mb-2">
                       {Math.round(post.distance)}m away • {new Date(post.created_at).toLocaleDateString()}
                     </p>
-                    {!post.is_lost_item && post.status === 'active' && (
-                      <button
-                        onClick={() => handleClaim(post.id)}
-                        className="w-full px-3 py-1 bg-primary-600 text-white text-xs rounded hover:bg-primary-700 transition-colors"
-                      >
-                        Claim This Item
-                      </button>
-                    )}
+                    <Link
+                      to={`/post/${post.id}`}
+                      className="block w-full text-center px-3 py-1 bg-primary-600 text-white text-xs rounded hover:bg-primary-700 transition-colors"
+                    >
+                      View Details{post.status === 'active' ? ' & Claim' : ''}
+                    </Link>
                   </div>
                 </Popup>
               </Marker>
@@ -433,14 +415,12 @@ const Home = () => {
                       <span>{Math.round(post.distance)}m away</span>
                       <span>{new Date(post.created_at).toLocaleDateString()}</span>
                     </div>
-                    {!post.is_lost_item && post.status === 'active' && (
-                      <button
-                        onClick={() => handleClaim(post.id)}
-                        className="px-3 py-1 bg-primary-600 text-white text-xs rounded hover:bg-primary-700 transition-colors"
-                      >
-                        Claim
-                      </button>
-                    )}
+                    <Link
+                      to={`/post/${post.id}`}
+                      className="px-3 py-1 bg-primary-600 text-white text-xs rounded hover:bg-primary-700 transition-colors"
+                    >
+                      View{post.status === 'active' ? ' & Claim' : ''}
+                    </Link>
                   </div>
                 </div>
               </div>

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,8 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrInvalidEditToken indicates the supplied edit token does not match the post's token.
 	ErrInvalidEditToken = errors.New("invalid edit token")
+	// ErrPostNotActive indicates the post is no longer active (claimed/resolved/expired).
+	ErrPostNotActive = errors.New("post is not active")
 )
 
 // Repository provides database operations
@@ -539,18 +542,39 @@ func (r *Repository) SearchPosts(ctx context.Context, req SearchPostsRequest) (*
 	}, nil
 }
 
-// GetPostByID retrieves a post by ID
+// GetPostByID retrieves a post by ID, including its lost & found area and
+// building (when linked) so the detail view can show pickup information.
 func (r *Repository) GetPostByID(ctx context.Context, id uuid.UUID) (*Post, error) {
 	query := `
-		SELECT p.id, p.type, p.category, p.title, p.description,
-		       ST_Y(p.location::geometry) as latitude, 
+		SELECT p.id, p.type::text, p.category::text, p.title, p.description,
+		       ST_Y(p.location::geometry) as latitude,
 		       ST_X(p.location::geometry) as longitude,
 		       p.lost_found_area_id, p.posted_by, p.claimed_by, p.claimed_at, p.pickup_scheduled_at, p.picked_up_at,
-		       p.is_lost_item, p.status, p.contact_email, p.poster_name, p.image_urls, p.expires_at, p.created_at, p.updated_at
+		       p.is_lost_item, p.status::text, p.contact_email, p.poster_name, p.image_urls, p.expires_at, p.created_at, p.updated_at,
+		       lfa.id, lfa.building_id, lfa.name, lfa.location_description, lfa.contact_person,
+		       lfa.hours_of_operation, lfa.pickup_instructions, lfa.is_active, lfa.created_at, lfa.updated_at,
+		       b.id, b.name, b.description,
+		       ST_Y(b.location::geometry), ST_X(b.location::geometry),
+		       b.is_active, b.created_at, b.updated_at
 		FROM posts p
+		LEFT JOIN lost_found_areas lfa ON p.lost_found_area_id = lfa.id
+		LEFT JOIN buildings b ON lfa.building_id = b.id
 		WHERE p.id = $1`
 
 	var post Post
+	var (
+		lfaID, lfaBuildingID                             *uuid.UUID
+		lfaName, lfaLocDesc, lfaContact                  *string
+		lfaHours, lfaPickup                              *string
+		lfaActive                                        *bool
+		lfaCreated, lfaUpdated                           *time.Time
+		bID                                              *uuid.UUID
+		bName, bDesc                                     *string
+		bLat, bLng                                       *float64
+		bActive                                          *bool
+		bCreated, bUpdated                               *time.Time
+	)
+
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&post.ID,
 		&post.Type,
@@ -573,6 +597,9 @@ func (r *Repository) GetPostByID(ctx context.Context, id uuid.UUID) (*Post, erro
 		&post.ExpiresAt,
 		&post.CreatedAt,
 		&post.UpdatedAt,
+		&lfaID, &lfaBuildingID, &lfaName, &lfaLocDesc, &lfaContact,
+		&lfaHours, &lfaPickup, &lfaActive, &lfaCreated, &lfaUpdated,
+		&bID, &bName, &bDesc, &bLat, &bLng, &bActive, &bCreated, &bUpdated,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -581,7 +608,69 @@ func (r *Repository) GetPostByID(ctx context.Context, id uuid.UUID) (*Post, erro
 		return nil, fmt.Errorf("failed to get post: %w", err)
 	}
 
+	if lfaID != nil {
+		area := &LostFoundArea{
+			ID:                  *lfaID,
+			BuildingID:          derefUUID(lfaBuildingID),
+			Name:                derefString(lfaName),
+			LocationDescription: derefString(lfaLocDesc),
+			ContactPerson:       derefString(lfaContact),
+			HoursOfOperation:    derefString(lfaHours),
+			PickupInstructions:  derefString(lfaPickup),
+			IsActive:            derefBool(lfaActive),
+			CreatedAt:           derefTime(lfaCreated),
+			UpdatedAt:           derefTime(lfaUpdated),
+		}
+		if bID != nil {
+			area.Building = &Building{
+				ID:          *bID,
+				Name:        derefString(bName),
+				Description: derefString(bDesc),
+				Location:    Point{Latitude: derefFloat(bLat), Longitude: derefFloat(bLng)},
+				IsActive:    derefBool(bActive),
+				CreatedAt:   derefTime(bCreated),
+				UpdatedAt:   derefTime(bUpdated),
+			}
+		}
+		post.LostFoundArea = area
+	}
+
 	return &post, nil
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func derefBool(b *bool) bool {
+	if b == nil {
+		return false
+	}
+	return *b
+}
+
+func derefFloat(f *float64) float64 {
+	if f == nil {
+		return 0
+	}
+	return *f
+}
+
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+func derefUUID(u *uuid.UUID) uuid.UUID {
+	if u == nil {
+		return uuid.Nil
+	}
+	return *u
 }
 
 // ClaimPost claims a post for a user
@@ -681,6 +770,133 @@ func (r *Repository) CleanupExpiredPosts(ctx context.Context) (int, []string, er
 	}
 
 	return count, images, nil
+}
+
+// Interaction operations
+
+// CreateInteraction records a claim/help/report interaction on a post.
+func (r *Repository) CreateInteraction(ctx context.Context, postID uuid.UUID, req CreateInteractionRequest) (*Interaction, error) {
+	// Make sure the post exists and is still active
+	var status string
+	err := r.db.QueryRow(ctx, `SELECT status::text FROM posts WHERE id = $1`, postID).Scan(&status)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to check post: %w", err)
+	}
+	if status != "active" {
+		return nil, ErrPostNotActive
+	}
+
+	query := `
+		INSERT INTO interactions (post_id, interaction_type, contact_email, contact_name, message)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, post_id, interaction_type, COALESCE(contact_email, ''), COALESCE(contact_name, ''), COALESCE(message, ''), created_at, status`
+
+	var interaction Interaction
+	err = r.db.QueryRow(ctx, query, postID, req.InteractionType, req.ContactEmail, req.ContactName, req.Message).Scan(
+		&interaction.ID,
+		&interaction.PostID,
+		&interaction.InteractionType,
+		&interaction.ContactEmail,
+		&interaction.ContactName,
+		&interaction.Message,
+		&interaction.CreatedAt,
+		&interaction.Status,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create interaction: %w", err)
+	}
+
+	return &interaction, nil
+}
+
+// GetInteractionsByPost lists interactions on a post. The caller must hold the
+// post's edit token (i.e. be the poster).
+func (r *Repository) GetInteractionsByPost(ctx context.Context, postID uuid.UUID, editToken string) ([]Interaction, error) {
+	if _, err := r.verifyEditToken(ctx, postID, editToken); err != nil {
+		return nil, err
+	}
+
+	query := `
+		SELECT id, post_id, interaction_type, COALESCE(contact_email, ''), COALESCE(contact_name, ''), COALESCE(message, ''), created_at, status
+		FROM interactions
+		WHERE post_id = $1
+		ORDER BY created_at DESC`
+
+	rows, err := r.db.Query(ctx, query, postID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get interactions: %w", err)
+	}
+	defer rows.Close()
+
+	var interactions []Interaction
+	for rows.Next() {
+		var interaction Interaction
+		if err := rows.Scan(
+			&interaction.ID,
+			&interaction.PostID,
+			&interaction.InteractionType,
+			&interaction.ContactEmail,
+			&interaction.ContactName,
+			&interaction.Message,
+			&interaction.CreatedAt,
+			&interaction.Status,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan interaction: %w", err)
+		}
+		interactions = append(interactions, interaction)
+	}
+
+	return interactions, nil
+}
+
+// UpdateInteractionStatus accepts or rejects an interaction. Requires the edit
+// token of the post the interaction belongs to. Accepting a claim also marks
+// the post as claimed.
+func (r *Repository) UpdateInteractionStatus(ctx context.Context, interactionID uuid.UUID, editToken, newStatus string) error {
+	tx, err := r.db.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var postID uuid.UUID
+	var interactionType, storedToken string
+	err = tx.QueryRow(ctx, `
+		SELECT i.post_id, i.interaction_type, p.edit_token
+		FROM interactions i
+		JOIN posts p ON i.post_id = p.id
+		WHERE i.id = $1`, interactionID).Scan(&postID, &interactionType, &storedToken)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrNotFound
+		}
+		return fmt.Errorf("failed to get interaction: %w", err)
+	}
+	if subtle.ConstantTimeCompare([]byte(storedToken), []byte(editToken)) != 1 {
+		return ErrInvalidEditToken
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE interactions SET status = $1 WHERE id = $2`, newStatus, interactionID); err != nil {
+		return fmt.Errorf("failed to update interaction: %w", err)
+	}
+
+	// Accepting a claim marks the post as claimed
+	if newStatus == "accepted" && interactionType == "claim" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE posts SET status = 'claimed', claimed_at = now()
+			WHERE id = $1 AND status = 'active'`, postID); err != nil {
+			return fmt.Errorf("failed to mark post claimed: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
 
 // GetDefaultUserID returns the ID of the first active admin user. It is used as

@@ -26,6 +26,8 @@ const maxImagesPerPost = 5
 
 var validCategories = map[string]bool{"pet": true, "document": true, "item": true, "other": true}
 var validStatuses = map[string]bool{"active": true, "claimed": true, "resolved": true}
+var validInteractionTypes = map[string]bool{"claim": true, "help": true, "report": true}
+var validInteractionStatuses = map[string]bool{"accepted": true, "rejected": true}
 
 // Handler provides HTTP handlers for the API
 type Handler struct {
@@ -544,4 +546,127 @@ func (h *Handler) DeletePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Post deleted successfully"})
+}
+
+// Interaction handlers
+
+// CreateInteraction records a claim/help/report interaction on a post so the
+// poster can review it ("I think this is mine" + contact info).
+func (h *Handler) CreateInteraction(w http.ResponseWriter, r *http.Request) {
+	postID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid post ID", nil)
+		return
+	}
+
+	var req database.CreateInteractionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+
+	req.ContactEmail = strings.TrimSpace(req.ContactEmail)
+	req.ContactName = strings.TrimSpace(req.ContactName)
+	req.Message = strings.TrimSpace(req.Message)
+
+	if !validInteractionTypes[req.InteractionType] {
+		writeError(w, http.StatusBadRequest, "interaction_type must be one of: claim, help, report", nil)
+		return
+	}
+	if req.ContactEmail == "" || !strings.Contains(req.ContactEmail, "@") {
+		writeError(w, http.StatusBadRequest, "A valid contact_email is required", nil)
+		return
+	}
+	if len(req.Message) > 2000 {
+		writeError(w, http.StatusBadRequest, "Message is too long (max 2000 characters)", nil)
+		return
+	}
+
+	interaction, err := h.repo.CreateInteraction(r.Context(), postID, req)
+	if err != nil {
+		switch {
+		case errors.Is(err, database.ErrNotFound):
+			writeError(w, http.StatusNotFound, "Post not found", nil)
+		case errors.Is(err, database.ErrPostNotActive):
+			writeError(w, http.StatusConflict, "This post is no longer active", nil)
+		default:
+			writeError(w, http.StatusInternalServerError, "Failed to create interaction", err)
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, interaction)
+}
+
+// GetPostInteractions lists the interactions on a post. Only the poster (who
+// holds the edit token) may view them, since they contain contact details.
+func (h *Handler) GetPostInteractions(w http.ResponseWriter, r *http.Request) {
+	postID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid post ID", nil)
+		return
+	}
+
+	editToken := editTokenFromRequest(r)
+	if editToken == "" {
+		writeError(w, http.StatusUnauthorized, "Edit token required (X-Edit-Token header)", nil)
+		return
+	}
+
+	interactions, err := h.repo.GetInteractionsByPost(r.Context(), postID, editToken)
+	if err != nil {
+		switch {
+		case errors.Is(err, database.ErrNotFound):
+			writeError(w, http.StatusNotFound, "Post not found", nil)
+		case errors.Is(err, database.ErrInvalidEditToken):
+			writeError(w, http.StatusForbidden, "Invalid edit token", nil)
+		default:
+			writeError(w, http.StatusInternalServerError, "Failed to get interactions", err)
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, database.InteractionsResponse{Interactions: interactions})
+}
+
+// UpdateInteraction lets the poster accept or reject an interaction on their
+// post. Accepting a claim marks the post as claimed.
+func (h *Handler) UpdateInteraction(w http.ResponseWriter, r *http.Request) {
+	interactionID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid interaction ID", nil)
+		return
+	}
+
+	editToken := editTokenFromRequest(r)
+	if editToken == "" {
+		writeError(w, http.StatusUnauthorized, "Edit token required (X-Edit-Token header)", nil)
+		return
+	}
+
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if !validInteractionStatuses[req.Status] {
+		writeError(w, http.StatusBadRequest, "status must be 'accepted' or 'rejected'", nil)
+		return
+	}
+
+	if err := h.repo.UpdateInteractionStatus(r.Context(), interactionID, editToken, req.Status); err != nil {
+		switch {
+		case errors.Is(err, database.ErrNotFound):
+			writeError(w, http.StatusNotFound, "Interaction not found", nil)
+		case errors.Is(err, database.ErrInvalidEditToken):
+			writeError(w, http.StatusForbidden, "Invalid edit token", nil)
+		default:
+			writeError(w, http.StatusInternalServerError, "Failed to update interaction", err)
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Interaction updated successfully"})
 }
