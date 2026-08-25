@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -13,18 +15,97 @@ import (
 	"lostfound/internal/image"
 )
 
+// contextKey is a private type for context keys to avoid collisions
+type contextKey string
+
+// UserIDKey is the context key under which auth middleware stores the user ID
+const UserIDKey contextKey = "user_id"
+
+// maxImagesPerPost caps how many images can be attached to a single post
+const maxImagesPerPost = 5
+
+var validCategories = map[string]bool{"pet": true, "document": true, "item": true, "other": true}
+var validStatuses = map[string]bool{"active": true, "claimed": true, "resolved": true}
+
 // Handler provides HTTP handlers for the API
 type Handler struct {
-	repo        *database.Repository
+	repo         *database.Repository
 	imgProcessor *image.Processor
+
+	defaultUserOnce sync.Once
+	defaultUserID   uuid.UUID
+	defaultUserErr  error
 }
 
 // NewHandler creates a new handler instance
 func NewHandler(repo *database.Repository, imgProcessor *image.Processor) *Handler {
 	return &Handler{
-		repo:        repo,
+		repo:         repo,
 		imgProcessor: imgProcessor,
 	}
+}
+
+// writeJSON writes a JSON success response with the proper Content-Type
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(database.APIResponse{Success: true, Data: data}); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
+}
+
+// writeError writes a JSON error response. Internal details are logged, never
+// sent to the client.
+func writeError(w http.ResponseWriter, status int, publicMsg string, internal error) {
+	if internal != nil {
+		log.Printf("api error (%d %s): %v", status, publicMsg, internal)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(database.APIResponse{Success: false, Error: publicMsg}); err != nil {
+		log.Printf("failed to encode error response: %v", err)
+	}
+}
+
+// currentUserID resolves the acting user: the authenticated user from context
+// if present, otherwise the default admin user looked up once from the
+// database (a stopgap until real authentication is implemented).
+func (h *Handler) currentUserID(r *http.Request) (uuid.UUID, error) {
+	if v := r.Context().Value(UserIDKey); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			id, err := uuid.Parse(s)
+			if err != nil {
+				return uuid.Nil, errors.New("invalid user ID in context")
+			}
+			return id, nil
+		}
+		if id, ok := v.(uuid.UUID); ok {
+			return id, nil
+		}
+	}
+
+	h.defaultUserOnce.Do(func() {
+		h.defaultUserID, h.defaultUserErr = h.repo.GetDefaultUserID(r.Context())
+	})
+	if h.defaultUserErr != nil {
+		return uuid.Nil, h.defaultUserErr
+	}
+	return h.defaultUserID, nil
+}
+
+// editTokenFromRequest extracts the edit token from the X-Edit-Token header
+// (preferred) or the edit_token query parameter.
+func editTokenFromRequest(r *http.Request) string {
+	if token := r.Header.Get("X-Edit-Token"); token != "" {
+		return token
+	}
+	return r.URL.Query().Get("edit_token")
+}
+
+// stripUploadsPrefix converts a stored image URL like "/uploads/abc.jpg" to the
+// bare filename the image processor works with.
+func stripUploadsPrefix(url string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(url, "/uploads/"), "uploads/")
 }
 
 // Building handlers
@@ -33,61 +114,57 @@ func NewHandler(repo *database.Repository, imgProcessor *image.Processor) *Handl
 func (h *Handler) GetBuildings(w http.ResponseWriter, r *http.Request) {
 	buildings, err := h.repo.GetBuildings(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get buildings: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to get buildings", err)
 		return
 	}
 
-	response := database.BuildingsResponse{Buildings: buildings}
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    response,
-	})
+	writeJSON(w, http.StatusOK, database.BuildingsResponse{Buildings: buildings})
 }
 
 // GetBuildingByID returns a specific building
 func (h *Handler) GetBuildingByID(w http.ResponseWriter, r *http.Request) {
-	buildingIDStr := chi.URLParam(r, "id")
-	buildingID, err := uuid.Parse(buildingIDStr)
+	buildingID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "Invalid building ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid building ID", nil)
 		return
 	}
 
 	building, err := h.repo.GetBuildingByID(r.Context(), buildingID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get building: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to get building", err)
 		return
 	}
-
 	if building == nil {
-		http.Error(w, "Building not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Building not found", nil)
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    building,
-	})
+	writeJSON(w, http.StatusOK, building)
 }
 
 // CreateBuilding creates a new building (admin only)
 func (h *Handler) CreateBuilding(w http.ResponseWriter, r *http.Request) {
 	var req database.CreateBuildingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeError(w, http.StatusBadRequest, "Building name is required", nil)
+		return
+	}
+	if req.Latitude < -90 || req.Latitude > 90 || req.Longitude < -180 || req.Longitude > 180 {
+		writeError(w, http.StatusBadRequest, "Invalid coordinates", nil)
 		return
 	}
 
 	building, err := h.repo.CreateBuilding(r.Context(), req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create building: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to create building", err)
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    building,
-	})
+	writeJSON(w, http.StatusCreated, building)
 }
 
 // Lost & Found Area handlers
@@ -96,57 +173,49 @@ func (h *Handler) CreateBuilding(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetLostFoundAreas(w http.ResponseWriter, r *http.Request) {
 	areas, err := h.repo.GetLostFoundAreas(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get lost & found areas: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to get lost & found areas", err)
 		return
 	}
 
-	response := database.LostFoundAreasResponse{Areas: areas}
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    response,
-	})
+	writeJSON(w, http.StatusOK, database.LostFoundAreasResponse{Areas: areas})
 }
 
 // GetLostFoundAreasByBuilding returns lost & found areas for a specific building
 func (h *Handler) GetLostFoundAreasByBuilding(w http.ResponseWriter, r *http.Request) {
-	buildingIDStr := chi.URLParam(r, "buildingId")
-	buildingID, err := uuid.Parse(buildingIDStr)
+	buildingID, err := uuid.Parse(chi.URLParam(r, "buildingId"))
 	if err != nil {
-		http.Error(w, "Invalid building ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid building ID", nil)
 		return
 	}
 
 	areas, err := h.repo.GetLostFoundAreasByBuilding(r.Context(), buildingID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get lost & found areas: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to get lost & found areas", err)
 		return
 	}
 
-	response := database.LostFoundAreasResponse{Areas: areas}
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    response,
-	})
+	writeJSON(w, http.StatusOK, database.LostFoundAreasResponse{Areas: areas})
 }
 
 // CreateLostFoundArea creates a new lost & found area (admin only)
 func (h *Handler) CreateLostFoundArea(w http.ResponseWriter, r *http.Request) {
 	var req database.CreateLostFoundAreaRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeError(w, http.StatusBadRequest, "Area name is required", nil)
 		return
 	}
 
 	area, err := h.repo.CreateLostFoundArea(r.Context(), req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create lost & found area: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to create lost & found area", err)
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    area,
-	})
+	writeJSON(w, http.StatusCreated, area)
 }
 
 // User handlers
@@ -155,46 +224,42 @@ func (h *Handler) CreateLostFoundArea(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetOrCreateUser(w http.ResponseWriter, r *http.Request) {
 	var ssoUser database.SSOUser
 	if err := json.NewDecoder(r.Body).Decode(&ssoUser); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if strings.TrimSpace(ssoUser.SSOID) == "" || strings.TrimSpace(ssoUser.Email) == "" {
+		writeError(w, http.StatusBadRequest, "sso_id and email are required", nil)
 		return
 	}
 
 	user, err := h.repo.GetOrCreateUser(r.Context(), ssoUser)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get or create user: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to get or create user", err)
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    database.UserResponse{User: *user},
-	})
+	writeJSON(w, http.StatusOK, database.UserResponse{User: *user})
 }
 
 // GetUserByID returns a specific user
 func (h *Handler) GetUserByID(w http.ResponseWriter, r *http.Request) {
-	userIDStr := chi.URLParam(r, "id")
-	userID, err := uuid.Parse(userIDStr)
+	userID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "Invalid user ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid user ID", nil)
 		return
 	}
 
 	user, err := h.repo.GetUserByID(r.Context(), userID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get user: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to get user", err)
 		return
 	}
-
 	if user == nil {
-		http.Error(w, "User not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "User not found", nil)
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    database.UserResponse{User: *user},
-	})
+	writeJSON(w, http.StatusOK, database.UserResponse{User: *user})
 }
 
 // Post handlers
@@ -203,48 +268,49 @@ func (h *Handler) GetUserByID(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	// Parse multipart form
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Failed to parse form", nil)
 		return
 	}
 
-	// Get user ID from context (set by auth middleware) or use default admin user
-	var userID uuid.UUID
-	if userIDValue := r.Context().Value("user_id"); userIDValue != nil {
-		if userIDStr, ok := userIDValue.(string); ok && userIDStr != "" {
-			parsedUserID, err := uuid.Parse(userIDStr)
-			if err != nil {
-				http.Error(w, "Invalid user ID", http.StatusBadRequest)
-				return
-			}
-			userID = parsedUserID
-		} else {
-			// Use default admin user for testing
-			userID = uuid.MustParse("323746f1-686d-4dd4-a58c-0719ac53db72") // Admin user from sample data
-		}
-	} else {
-		// Use default admin user for testing
-		userID = uuid.MustParse("323746f1-686d-4dd4-a58c-0719ac53db72") // Admin user from sample data
+	userID, err := h.currentUserID(r)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "No user account available to post as; run migrations to create the default user", err)
+		return
 	}
 
 	// Parse form data
 	req := database.CreatePostRequest{
-		Type:        r.FormValue("type"),
-		Category:    r.FormValue("category"),
-		Title:       r.FormValue("title"),
-		Description: r.FormValue("description"),
+		Type:         r.FormValue("type"),
+		Category:     r.FormValue("category"),
+		Title:        strings.TrimSpace(r.FormValue("title")),
+		Description:  r.FormValue("description"),
 		ContactEmail: r.FormValue("contact_email"),
 		PosterName:   r.FormValue("poster_name"),
 	}
 
+	// Validate required fields against the schema's enums
+	if req.Type != "lost" && req.Type != "found" {
+		writeError(w, http.StatusBadRequest, "type must be 'lost' or 'found'", nil)
+		return
+	}
+	if !validCategories[req.Category] {
+		writeError(w, http.StatusBadRequest, "category must be one of: pet, document, item, other", nil)
+		return
+	}
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required", nil)
+		return
+	}
+
 	// Parse location
 	lat, err := strconv.ParseFloat(r.FormValue("latitude"), 64)
-	if err != nil {
-		http.Error(w, "Invalid latitude", http.StatusBadRequest)
+	if err != nil || lat < -90 || lat > 90 {
+		writeError(w, http.StatusBadRequest, "Invalid latitude", nil)
 		return
 	}
 	lng, err := strconv.ParseFloat(r.FormValue("longitude"), 64)
-	if err != nil {
-		http.Error(w, "Invalid longitude", http.StatusBadRequest)
+	if err != nil || lng < -180 || lng > 180 {
+		writeError(w, http.StatusBadRequest, "Invalid longitude", nil)
 		return
 	}
 	req.Latitude = lat
@@ -254,7 +320,7 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	if lostFoundAreaIDStr := r.FormValue("lost_found_area_id"); lostFoundAreaIDStr != "" {
 		lostFoundAreaID, err := uuid.Parse(lostFoundAreaIDStr)
 		if err != nil {
-			http.Error(w, "Invalid lost & found area ID", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "Invalid lost & found area ID", nil)
 			return
 		}
 		req.LostFoundAreaID = &lostFoundAreaID
@@ -263,35 +329,36 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	// Parse is_lost_item
 	req.IsLostItem = r.FormValue("is_lost_item") == "true"
 
-		// Process images
+	// Process images
 	var imageURLs []string
 	if files := r.MultipartForm.File["images"]; len(files) > 0 {
+		if len(files) > maxImagesPerPost {
+			writeError(w, http.StatusBadRequest, "Too many images (maximum 5)", nil)
+			return
+		}
 		for _, file := range files {
-			imageURL, _, err := h.imgProcessor.ProcessUpload(file)
+			filename, _, err := h.imgProcessor.ProcessUpload(file)
 			if err != nil {
-				http.Error(w, fmt.Sprintf("Failed to process image: %v", err), http.StatusInternalServerError)
+				writeError(w, http.StatusBadRequest, "Failed to process image: "+err.Error(), nil)
 				return
 			}
-			imageURLs = append(imageURLs, imageURL)
+			imageURLs = append(imageURLs, h.imgProcessor.GetImageURL(filename))
 		}
 	}
 
-	// Create post
+	// Create post. The response is the only place the edit token is ever
+	// returned; the client must store it to edit or delete the post later.
 	post, err := h.repo.CreatePost(r.Context(), req, userID, imageURLs)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create post: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to create post", err)
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    post,
-	})
+	writeJSON(w, http.StatusCreated, post)
 }
 
 // SearchPosts searches for posts with various filters
 func (h *Handler) SearchPosts(w http.ResponseWriter, r *http.Request) {
-	// Parse query parameters
 	req := database.SearchPostsRequest{}
 
 	// Location parameters
@@ -306,41 +373,32 @@ func (h *Handler) SearchPosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if radiusStr := r.URL.Query().Get("radius"); radiusStr != "" {
-		if radius, err := strconv.Atoi(radiusStr); err == nil {
+		if radius, err := strconv.Atoi(radiusStr); err == nil && radius > 0 {
 			req.Radius = radius
 		}
 	}
 
 	// Filter parameters
-	if req.Type = r.URL.Query().Get("type"); req.Type == "" {
-		req.Type = ""
-	}
-	if req.Category = r.URL.Query().Get("category"); req.Category == "" {
-		req.Category = ""
-	}
+	req.Type = r.URL.Query().Get("type")
+	req.Category = r.URL.Query().Get("category")
 
-	// Building filter
 	if buildingIDStr := r.URL.Query().Get("building_id"); buildingIDStr != "" {
 		if buildingID, err := uuid.Parse(buildingIDStr); err == nil {
 			req.BuildingID = &buildingID
 		}
 	}
-
-	// Lost & Found Area filter
 	if areaIDStr := r.URL.Query().Get("lost_found_area_id"); areaIDStr != "" {
 		if areaID, err := uuid.Parse(areaIDStr); err == nil {
 			req.LostFoundAreaID = &areaID
 		}
 	}
-
-	// Lost/Found item filter
 	if isLostItemStr := r.URL.Query().Get("is_lost_item"); isLostItemStr != "" {
 		if isLostItem, err := strconv.ParseBool(isLostItemStr); err == nil {
 			req.IsLostItem = &isLostItem
 		}
 	}
 
-	// Pagination
+	// Pagination (clamped again in the repository)
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		if limit, err := strconv.Atoi(limitStr); err == nil {
 			req.Limit = limit
@@ -352,143 +410,138 @@ func (h *Handler) SearchPosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Search posts
 	response, err := h.repo.SearchPosts(r.Context(), req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to search posts: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to search posts", err)
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    response,
-	})
+	writeJSON(w, http.StatusOK, response)
 }
 
 // GetPostByID returns a specific post
 func (h *Handler) GetPostByID(w http.ResponseWriter, r *http.Request) {
-	postIDStr := chi.URLParam(r, "id")
-	postID, err := uuid.Parse(postIDStr)
+	postID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "Invalid post ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid post ID", nil)
 		return
 	}
 
 	post, err := h.repo.GetPostByID(r.Context(), postID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get post: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to get post", err)
 		return
 	}
-
 	if post == nil {
-		http.Error(w, "Post not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Post not found", nil)
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    post,
-	})
+	writeJSON(w, http.StatusOK, post)
 }
 
 // ClaimPost claims a post for a user
 func (h *Handler) ClaimPost(w http.ResponseWriter, r *http.Request) {
-	// Get user ID from context (set by auth middleware) or use default admin user
-	var userID uuid.UUID
-	if userIDValue := r.Context().Value("user_id"); userIDValue != nil {
-		if userIDStr, ok := userIDValue.(string); ok && userIDStr != "" {
-			parsedUserID, err := uuid.Parse(userIDStr)
-			if err != nil {
-				http.Error(w, "Invalid user ID", http.StatusBadRequest)
-				return
-			}
-			userID = parsedUserID
-		} else {
-			// Use default admin user for testing
-			userID = uuid.MustParse("323746f1-686d-4dd4-a58c-0719ac53db72") // Admin user from sample data
-		}
-	} else {
-		// Use default admin user for testing
-		userID = uuid.MustParse("323746f1-686d-4dd4-a58c-0719ac53db72") // Admin user from sample data
-	}
-
-	// Get post ID from URL
-	postIDStr := chi.URLParam(r, "id")
-	postID, err := uuid.Parse(postIDStr)
+	userID, err := h.currentUserID(r)
 	if err != nil {
-		http.Error(w, "Invalid post ID", http.StatusBadRequest)
+		writeError(w, http.StatusServiceUnavailable, "No user account available; run migrations to create the default user", err)
 		return
 	}
 
-	// Claim the post
-	err = h.repo.ClaimPost(r.Context(), postID, userID)
+	postID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			http.Error(w, "Post not found or already claimed", http.StatusNotFound)
-		} else {
-			http.Error(w, fmt.Sprintf("Failed to claim post: %v", err), http.StatusInternalServerError)
-		}
+		writeError(w, http.StatusBadRequest, "Invalid post ID", nil)
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    map[string]string{"message": "Post claimed successfully"},
-	})
+	if err := h.repo.ClaimPost(r.Context(), postID, userID); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "Post not found or already claimed", nil)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to claim post", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Post claimed successfully"})
 }
 
-// UpdatePost updates a post
+// UpdatePost updates a post. Requires the post's edit token via the
+// X-Edit-Token header (or edit_token query parameter).
 func (h *Handler) UpdatePost(w http.ResponseWriter, r *http.Request) {
-	postIDStr := chi.URLParam(r, "id")
-	postID, err := uuid.Parse(postIDStr)
+	postID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "Invalid post ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid post ID", nil)
+		return
+	}
+
+	editToken := editTokenFromRequest(r)
+	if editToken == "" {
+		writeError(w, http.StatusUnauthorized, "Edit token required (X-Edit-Token header)", nil)
 		return
 	}
 
 	var req database.UpdatePostRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if req.Status != "" && !validStatuses[req.Status] {
+		writeError(w, http.StatusBadRequest, "status must be one of: active, claimed, resolved", nil)
 		return
 	}
 
-	err = h.repo.UpdatePost(r.Context(), postID, req)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			http.Error(w, "Post not found", http.StatusNotFound)
-		} else {
-			http.Error(w, fmt.Sprintf("Failed to update post: %v", err), http.StatusInternalServerError)
+	if err := h.repo.UpdatePost(r.Context(), postID, editToken, req); err != nil {
+		switch {
+		case errors.Is(err, database.ErrNotFound):
+			writeError(w, http.StatusNotFound, "Post not found", nil)
+		case errors.Is(err, database.ErrInvalidEditToken):
+			writeError(w, http.StatusForbidden, "Invalid edit token", nil)
+		default:
+			writeError(w, http.StatusInternalServerError, "Failed to update post", err)
 		}
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    map[string]string{"message": "Post updated successfully"},
-	})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Post updated successfully"})
 }
 
-// DeletePost deletes a post
+// DeletePost deletes a post. Requires the post's edit token via the
+// X-Edit-Token header (or edit_token query parameter).
 func (h *Handler) DeletePost(w http.ResponseWriter, r *http.Request) {
-	postIDStr := chi.URLParam(r, "id")
-	postID, err := uuid.Parse(postIDStr)
+	postID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "Invalid post ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid post ID", nil)
 		return
 	}
 
-	err = h.repo.DeletePost(r.Context(), postID)
+	editToken := editTokenFromRequest(r)
+	if editToken == "" {
+		writeError(w, http.StatusUnauthorized, "Edit token required (X-Edit-Token header)", nil)
+		return
+	}
+
+	imageURLs, err := h.repo.DeletePost(r.Context(), postID, editToken)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			http.Error(w, "Post not found", http.StatusNotFound)
-		} else {
-			http.Error(w, fmt.Sprintf("Failed to delete post: %v", err), http.StatusInternalServerError)
+		switch {
+		case errors.Is(err, database.ErrNotFound):
+			writeError(w, http.StatusNotFound, "Post not found", nil)
+		case errors.Is(err, database.ErrInvalidEditToken):
+			writeError(w, http.StatusForbidden, "Invalid edit token", nil)
+		default:
+			writeError(w, http.StatusInternalServerError, "Failed to delete post", err)
 		}
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.APIResponse{
-		Success: true,
-		Data:    map[string]string{"message": "Post deleted successfully"},
-	})
-} 
+	// Best-effort cleanup of the post's image files
+	for _, url := range imageURLs {
+		if filename := stripUploadsPrefix(url); filename != "" {
+			if err := h.imgProcessor.DeleteImage(filename); err != nil {
+				log.Printf("failed to delete image %s: %v", filename, err)
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Post deleted successfully"})
+}

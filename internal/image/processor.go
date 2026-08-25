@@ -4,11 +4,16 @@ import (
 	"crypto/rand"
 	"fmt"
 	"image"
+	// Register decoders so image.DecodeConfig can validate uploads
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"mime/multipart"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/disintegration/imaging"
 )
@@ -40,6 +45,11 @@ func (p *Processor) ProcessUpload(file *multipart.FileHeader) (string, string, e
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	if !p.isAllowedType(ext) {
 		return "", "", fmt.Errorf("file type %s is not allowed", ext)
+	}
+
+	// Validate actual file content, not just the extension
+	if err := p.ValidateImage(file); err != nil {
+		return "", "", err
 	}
 
 	// Generate unique filename
@@ -109,7 +119,10 @@ func (p *Processor) generateThumbnail(originalPath, thumbnailPath string) error 
 // generateUniqueFilename creates a unique filename with random bytes
 func (p *Processor) generateUniqueFilename(ext string) string {
 	bytes := make([]byte, 16)
-	rand.Read(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		// crypto/rand failing is unrecoverable; fall back to a timestamp-based name
+		return fmt.Sprintf("%d%s", time.Now().UnixNano(), ext)
+	}
 	return fmt.Sprintf("%x%s", bytes, ext)
 }
 
