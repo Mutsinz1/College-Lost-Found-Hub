@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -29,9 +30,32 @@ var validStatuses = map[string]bool{"active": true, "claimed": true, "resolved":
 var validInteractionTypes = map[string]bool{"claim": true, "help": true, "report": true}
 var validInteractionStatuses = map[string]bool{"accepted": true, "rejected": true}
 
+// Store is the data-access interface the HTTP handlers depend on. It is
+// implemented by *database.Repository and by mocks in tests.
+type Store interface {
+	GetBuildings(ctx context.Context) ([]database.Building, error)
+	GetBuildingByID(ctx context.Context, id uuid.UUID) (*database.Building, error)
+	CreateBuilding(ctx context.Context, req database.CreateBuildingRequest) (*database.Building, error)
+	GetLostFoundAreas(ctx context.Context) ([]database.LostFoundArea, error)
+	GetLostFoundAreasByBuilding(ctx context.Context, buildingID uuid.UUID) ([]database.LostFoundArea, error)
+	CreateLostFoundArea(ctx context.Context, req database.CreateLostFoundAreaRequest) (*database.LostFoundArea, error)
+	GetOrCreateUser(ctx context.Context, ssoUser database.SSOUser) (*database.User, error)
+	GetUserByID(ctx context.Context, id uuid.UUID) (*database.User, error)
+	GetDefaultUserID(ctx context.Context) (uuid.UUID, error)
+	CreatePost(ctx context.Context, req database.CreatePostRequest, userID uuid.UUID, imageURLs []string) (*database.Post, error)
+	SearchPosts(ctx context.Context, req database.SearchPostsRequest) (*database.SearchPostsResponse, error)
+	GetPostByID(ctx context.Context, id uuid.UUID) (*database.Post, error)
+	ClaimPost(ctx context.Context, postID, userID uuid.UUID) error
+	UpdatePost(ctx context.Context, id uuid.UUID, editToken string, req database.UpdatePostRequest) error
+	DeletePost(ctx context.Context, id uuid.UUID, editToken string) ([]string, error)
+	CreateInteraction(ctx context.Context, postID uuid.UUID, req database.CreateInteractionRequest) (*database.Interaction, error)
+	GetInteractionsByPost(ctx context.Context, postID uuid.UUID, editToken string) ([]database.Interaction, error)
+	UpdateInteractionStatus(ctx context.Context, interactionID uuid.UUID, editToken, newStatus string) error
+}
+
 // Handler provides HTTP handlers for the API
 type Handler struct {
-	repo         *database.Repository
+	repo         Store
 	imgProcessor *image.Processor
 
 	defaultUserOnce sync.Once
@@ -40,7 +64,7 @@ type Handler struct {
 }
 
 // NewHandler creates a new handler instance
-func NewHandler(repo *database.Repository, imgProcessor *image.Processor) *Handler {
+func NewHandler(repo Store, imgProcessor *image.Processor) *Handler {
 	return &Handler{
 		repo:         repo,
 		imgProcessor: imgProcessor,
@@ -253,12 +277,6 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := h.currentUserID(r)
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "No user account available to post as; run migrations to create the default user", err)
-		return
-	}
-
 	// Parse form data
 	req := database.CreatePostRequest{
 		Type:         r.FormValue("type"),
@@ -309,6 +327,13 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 
 	// Parse is_lost_item
 	req.IsLostItem = r.FormValue("is_lost_item") == "true"
+
+	// Resolve the acting user (after validation so bad requests fail fast)
+	userID, err := h.currentUserID(r)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "No user account available to post as; run migrations to create the default user", err)
+		return
+	}
 
 	// Process images
 	var imageURLs []string

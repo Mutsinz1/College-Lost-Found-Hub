@@ -22,13 +22,13 @@ const RoleKey contextKey = "user_role"
 
 // AuthHandler serves login endpoints and issues session tokens.
 type AuthHandler struct {
-	repo     *database.Repository
+	repo     Store
 	cfg      *config.Config
 	verifier *auth.GoogleVerifier
 }
 
 // NewAuthHandler creates the authentication handler.
-func NewAuthHandler(repo *database.Repository, cfg *config.Config) *AuthHandler {
+func NewAuthHandler(repo Store, cfg *config.Config) *AuthHandler {
 	return &AuthHandler{
 		repo:     repo,
 		cfg:      cfg,
