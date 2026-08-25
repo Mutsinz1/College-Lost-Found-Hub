@@ -14,6 +14,7 @@ type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
 	JWT      JWTConfig
+	Auth     AuthConfig
 	Upload   UploadConfig
 	Email    EmailConfig
 }
@@ -32,6 +33,11 @@ type DatabaseConfig struct {
 type JWTConfig struct {
 	Secret     string
 	Expiration time.Duration
+}
+
+type AuthConfig struct {
+	GoogleClientID     string
+	AllowedEmailDomain string // e.g. "college.edu"; empty allows any domain
 }
 
 type UploadConfig struct {
@@ -68,6 +74,10 @@ func Load() (*Config, error) {
 		JWT: JWTConfig{
 			Secret:     getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
 			Expiration: getEnvAsDuration("JWT_EXPIRATION", 24*time.Hour),
+		},
+		Auth: AuthConfig{
+			GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
+			AllowedEmailDomain: getEnv("ALLOWED_EMAIL_DOMAIN", ""),
 		},
 		Upload: UploadConfig{
 			Dir:     getEnv("UPLOAD_DIR", "./uploads"),
