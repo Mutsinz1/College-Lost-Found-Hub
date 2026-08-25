@@ -127,23 +127,29 @@ Lost&Found/
 
 ### Posts
 - `GET /api/posts` - Search posts with geofencing and filters
-- `POST /api/posts` - Create a new lost/found post
-- `GET /api/posts/{id}` - Get post details
-- `PUT /api/posts/{id}` - Update post (with edit token)
-- `DELETE /api/posts/{id}` - Delete post (with edit token)
+- `POST /api/posts` - Create a new lost/found post (response includes the post's one-time `edit_token`)
+- `GET /api/posts/{id}` - Get post details (includes pickup area/building info)
+- `PUT /api/posts/{id}` - Update post (requires `X-Edit-Token` header)
+- `DELETE /api/posts/{id}` - Delete post (requires `X-Edit-Token` header)
 
 ### Campus Buildings & Areas
 - `GET /api/buildings` - Get all campus buildings
 - `GET /api/buildings/{id}` - Get building details
+- `POST /api/buildings` - Create building (admin only)
 - `GET /api/areas` - Get all lost & found areas
 - `GET /api/areas/building/{buildingId}` - Get areas by building
+- `POST /api/areas` - Create lost & found area (admin only)
 
-### Users
-- `POST /api/users/sso` - Get or create user via SSO
+### Authentication
+- `POST /api/auth/google` - Exchange a Google ID token for an app session token
+- `POST /api/auth/dev-login` - Development-only login (mounted when `ENVIRONMENT=development`)
 - `GET /api/users/{id}` - Get user details
 
-### Interactions
-- `POST /api/posts/{id}/claim` - Mark item as claimed
+### Interactions (claims & help offers)
+- `POST /api/posts/{id}/claim` - Mark item as claimed (quick claim)
+- `POST /api/posts/{id}/interactions` - Submit a claim/help/report with contact info
+- `GET /api/posts/{id}/interactions` - List interactions on your post (requires `X-Edit-Token`)
+- `PUT /api/interactions/{id}` - Accept/reject an interaction (requires `X-Edit-Token`; accepting a claim marks the post claimed)
 
 ## ⚙️ Configuration
 
@@ -158,11 +164,22 @@ DATABASE_URL=postgres://lostfound_user:lostfound_password@localhost:5432/lostfou
 # Server
 PORT=8080
 ENVIRONMENT=development
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001
+
+# Sessions & sign-in
+JWT_SECRET=change-me-in-production
+GOOGLE_CLIENT_ID=            # OAuth client ID for Google Sign-In (optional in dev)
+ALLOWED_EMAIL_DOMAIN=        # e.g. college.edu to restrict sign-in to your school
 
 # File Storage
 UPLOAD_DIR=./uploads
 MAX_FILE_SIZE=10485760  # 10MB
-ALLOWED_TYPES=image/jpeg,image/png,image/gif
+```
+
+For Google Sign-In on the frontend, also create `frontend/.env` with the same client ID:
+
+```env
+REACT_APP_GOOGLE_CLIENT_ID=<your client id>.apps.googleusercontent.com
 ```
 
 ## 🛠️ Development Commands
@@ -271,9 +288,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [x] Campus building and area management system
 - [x] Edit token system for secure post management
 
+- [x] Post detail page with gallery, map, pickup info and owner panel
+- [x] Claim/contact flow with poster review (interactions)
+- [x] Google Sign-In with JWT sessions and admin-only routes
+- [x] Test suite (unit + DB integration) with GitHub Actions CI
+
 ### 🔄 In Progress
 - [ ] Real-time notifications via WebSocket
-- [ ] User authentication and authorization system
 - [ ] Email alerts for area matches
 - [ ] Advanced search filters and sorting
 
