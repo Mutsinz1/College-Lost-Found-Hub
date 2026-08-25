@@ -108,6 +108,22 @@ export const postsAPI = {
   claim: (id) => api.post(`/posts/${id}/claim`),
 };
 
+// Interactions API (claims / help offers on a post)
+export const interactionsAPI = {
+  // Anyone can submit a claim/help interaction with their contact info
+  create: (postId, data) => api.post(`/posts/${postId}/interactions`, data),
+
+  // Only the poster (edit token holder) can list interactions on their post
+  listForPost: (postId, editToken) => api.get(`/posts/${postId}/interactions`, {
+    headers: { 'X-Edit-Token': editToken || getEditToken(postId) || '' },
+  }),
+
+  // Only the poster can accept/reject an interaction
+  updateStatus: (interactionId, status, postId, editToken) => api.put(`/interactions/${interactionId}`, { status }, {
+    headers: { 'X-Edit-Token': editToken || getEditToken(postId) || '' },
+  }),
+};
+
 // Auth utilities
 export const saveAuthToken = (token) => {
   localStorage.setItem('auth_token', token);

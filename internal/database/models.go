@@ -160,6 +160,19 @@ type ClaimPostRequest struct {
 	PostID uuid.UUID `json:"post_id"`
 }
 
+// CreateInteractionRequest represents a request to create an interaction on a post
+type CreateInteractionRequest struct {
+	InteractionType string `json:"interaction_type"` // 'claim', 'help', 'report'
+	ContactEmail    string `json:"contact_email"`
+	ContactName     string `json:"contact_name"`
+	Message         string `json:"message"`
+}
+
+// InteractionsResponse represents the response for a post's interactions
+type InteractionsResponse struct {
+	Interactions []Interaction `json:"interactions"`
+}
+
 // CreateBuildingRequest represents a request to create a building
 type CreateBuildingRequest struct {
 	Name        string  `json:"name"`
