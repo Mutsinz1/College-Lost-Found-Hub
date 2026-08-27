@@ -922,11 +922,18 @@ func (r *Repository) UpdateInteractionStatus(ctx context.Context, interactionID 
 	return nil
 }
 
-// GetDefaultUserID returns the ID of the first active admin user. It is used as
-// a fallback author for posts until real authentication is wired up.
+// SystemAnonymousSSOID identifies the built-in account that owns posts created
+// without signing in. Created by migration 002; see that file for why it is a
+// dedicated unprivileged row rather than an admin.
+const SystemAnonymousSSOID = "system:anonymous"
+
+// GetDefaultUserID returns the ID of the system account used as the author of
+// anonymous posts. It deliberately does not fall back to an admin: attributing
+// anonymous content to a privileged account is how the seeded-admin problem
+// started.
 func (r *Repository) GetDefaultUserID(ctx context.Context) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := r.db.QueryRow(ctx, `SELECT id FROM users WHERE role = 'admin' AND is_active = true ORDER BY created_at LIMIT 1`).Scan(&id)
+	err := r.db.QueryRow(ctx, `SELECT id FROM users WHERE sso_id = $1 AND is_active = true`, SystemAnonymousSSOID).Scan(&id)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return uuid.Nil, ErrNotFound

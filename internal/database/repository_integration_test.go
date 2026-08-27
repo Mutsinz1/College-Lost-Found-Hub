@@ -292,3 +292,56 @@ func TestGetOrCreateUserRelinksOrdinaryAccount(t *testing.T) {
 		t.Errorf("role = %q, want user", second.Role)
 	}
 }
+
+func TestGetDefaultUserIDIsUnprivileged(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	// Anonymous posts are attributed to this account. It must never be an
+	// admin: an earlier version resolved it with `WHERE role = 'admin'`, which
+	// attributed anonymous content to whatever privileged row existed.
+	id, err := repo.GetDefaultUserID(ctx)
+	if err != nil {
+		t.Fatalf("GetDefaultUserID failed (did migration 002 run?): %v", err)
+	}
+
+	var ssoID, role string
+	if err := repo.db.QueryRow(ctx, `SELECT sso_id, role FROM users WHERE id = $1`, id).Scan(&ssoID, &role); err != nil {
+		t.Fatalf("failed to read the default user: %v", err)
+	}
+	if ssoID != SystemAnonymousSSOID {
+		t.Errorf("sso_id = %q, want %q", ssoID, SystemAnonymousSSOID)
+	}
+	if role != "user" {
+		t.Errorf("role = %q, want user: anonymous posts must not be attributed to a privileged account", role)
+	}
+}
+
+func TestGetDefaultUserIDIgnoresAdmins(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	// Adding an admin must not change who owns anonymous posts.
+	before, err := repo.GetDefaultUserID(ctx)
+	if err != nil {
+		t.Fatalf("GetDefaultUserID failed: %v", err)
+	}
+
+	email := fmt.Sprintf("extra-admin-%s@college.edu", uuid.NewString()[:8])
+	if err := repo.db.Exec(ctx,
+		`INSERT INTO users (sso_id, email, name, role) VALUES ($1, $2, $3, 'admin')`,
+		"provisioned_"+uuid.NewString(), email, "Extra Admin"); err != nil {
+		t.Fatalf("failed to insert admin: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = repo.db.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+	})
+
+	after, err := repo.GetDefaultUserID(ctx)
+	if err != nil {
+		t.Fatalf("GetDefaultUserID failed after adding an admin: %v", err)
+	}
+	if after != before {
+		t.Errorf("default user changed from %s to %s when an admin was added", before, after)
+	}
+}
