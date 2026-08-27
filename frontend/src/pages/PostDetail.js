@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import {
   ArrowLeft, MapPin, Calendar, Clock, User, Building, Mail,
-  Pencil, Trash2, HandHelping, CheckCircle, XCircle, Inbox,
+  Pencil, Trash2, HelpingHand, CheckCircle, XCircle, Inbox,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { postsAPI, interactionsAPI, getEditToken, removeEditToken } from '../services/api';
@@ -290,7 +290,7 @@ const PostDetail = () => {
                   onClick={() => setShowClaimForm(true)}
                   className="inline-flex items-center space-x-2 px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700 transition-colors"
                 >
-                  <HandHelping className="w-4 h-4" />
+                  <HelpingHand className="w-4 h-4" />
                   <span>{post.is_lost_item ? "I found this item" : 'This is mine'}</span>
                 </button>
               ) : (
