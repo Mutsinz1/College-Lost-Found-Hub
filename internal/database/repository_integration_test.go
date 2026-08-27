@@ -2,7 +2,10 @@ package database
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -225,5 +228,67 @@ func TestClaimPostRowsAffected(t *testing.T) {
 	// Second claim must fail: the post is no longer active
 	if err := repo.ClaimPost(ctx, post.ID, userID); err != ErrNotFound {
 		t.Errorf("double claim: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetOrCreateUserRefusesPrivilegedRelink(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	// An operator-provisioned admin row, of the shape the dev seed creates:
+	// a role but no usable SSO identity.
+	email := fmt.Sprintf("admin-%s@college.edu", uuid.NewString()[:8])
+	if err := repo.db.Exec(ctx,
+		`INSERT INTO users (sso_id, email, name, role) VALUES ($1, $2, $3, 'admin')`,
+		"provisioned_"+uuid.NewString(), email, "Provisioned Admin"); err != nil {
+		t.Fatalf("failed to seed admin: %v", err)
+	}
+
+	// Someone signs in with a fresh SSO identity that happens to carry the same
+	// address. They must not inherit the admin account.
+	_, err := repo.GetOrCreateUser(ctx, SSOUser{
+		SSOID: "google:" + uuid.NewString(),
+		Email: email,
+		Name:  "Attacker",
+	})
+	if !errors.Is(err, ErrPrivilegedRelink) {
+		t.Fatalf("err = %v, want ErrPrivilegedRelink", err)
+	}
+
+	// The admin row must be untouched.
+	var ssoID, role string
+	if err := repo.db.QueryRow(ctx, `SELECT sso_id, role FROM users WHERE email = $1`, email).Scan(&ssoID, &role); err != nil {
+		t.Fatalf("failed to re-read admin: %v", err)
+	}
+	if role != "admin" || !strings.HasPrefix(ssoID, "provisioned_") {
+		t.Errorf("admin row was modified: sso_id=%q role=%q", ssoID, role)
+	}
+}
+
+func TestGetOrCreateUserRelinksOrdinaryAccount(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	// Relinking a normal account across SSO paths must still work; that is the
+	// behaviour the privileged check is carving an exception out of.
+	email := fmt.Sprintf("student-%s@college.edu", uuid.NewString()[:8])
+	first, err := repo.GetOrCreateUser(ctx, SSOUser{SSOID: "dev:" + email, Email: email, Name: "Student"})
+	if err != nil {
+		t.Fatalf("first sign-in failed: %v", err)
+	}
+
+	newSSO := "google:" + uuid.NewString()
+	second, err := repo.GetOrCreateUser(ctx, SSOUser{SSOID: newSSO, Email: email, Name: "Student"})
+	if err != nil {
+		t.Fatalf("relink failed: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Errorf("relink created a new row: %s vs %s", second.ID, first.ID)
+	}
+	if second.SSOID != newSSO {
+		t.Errorf("sso_id = %q, want %q", second.SSOID, newSSO)
+	}
+	if second.Role != "user" {
+		t.Errorf("role = %q, want user", second.Role)
 	}
 }

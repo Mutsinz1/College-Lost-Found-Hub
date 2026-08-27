@@ -21,6 +21,11 @@ var (
 	ErrInvalidEditToken = errors.New("invalid edit token")
 	// ErrPostNotActive indicates the post is no longer active (claimed/resolved/expired).
 	ErrPostNotActive = errors.New("post is not active")
+	// ErrPrivilegedRelink indicates a sign-in tried to claim an existing account
+	// that holds a privileged role. Linking a new SSO identity to such an account
+	// would grant those privileges to whoever controls the email address, so it
+	// must be done deliberately by an operator instead.
+	ErrPrivilegedRelink = errors.New("cannot link a new sign-in to a privileged account")
 )
 
 // Repository provides database operations
@@ -305,9 +310,24 @@ func (r *Repository) GetOrCreateUser(ctx context.Context, ssoUser SSOUser) (*Use
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
+	// No account for this SSO identity. Before creating one, check whether the
+	// email is already taken by an account with a privileged role: relinking
+	// such a row would hand its privileges to anyone who can authenticate with
+	// that address at the identity provider. Provisioned or seeded admin rows
+	// are exactly this shape, so refuse and let an operator do it explicitly.
+	var existingRole string
+	err = r.db.QueryRow(ctx, `SELECT role FROM users WHERE email = $1`, ssoUser.Email).Scan(&existingRole)
+	switch {
+	case err == nil && existingRole != "user":
+		return nil, ErrPrivilegedRelink
+	case err != nil && err != pgx.ErrNoRows:
+		return nil, fmt.Errorf("failed to check existing user: %w", err)
+	}
+
 	// Create new user. If a user with this email already exists (e.g. they
 	// previously signed in through a different SSO path), relink it instead
-	// of failing on the unique email constraint.
+	// of failing on the unique email constraint. Only unprivileged accounts
+	// reach this point.
 	createQuery := `
 		INSERT INTO users (sso_id, email, name)
 		VALUES ($1, $2, $3)

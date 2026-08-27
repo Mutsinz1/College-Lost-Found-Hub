@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -91,6 +92,10 @@ func (h *AuthHandler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 		Name:  googleUser.Name,
 	})
 	if err != nil {
+		if errors.Is(err, database.ErrPrivilegedRelink) {
+			writeError(w, http.StatusForbidden, "An administrator account already uses this email; contact your administrator to link it", nil)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "Failed to sign in", err)
 		return
 	}
@@ -125,6 +130,10 @@ func (h *AuthHandler) DevLogin(w http.ResponseWriter, r *http.Request) {
 		Name:  req.Name,
 	})
 	if err != nil {
+		if errors.Is(err, database.ErrPrivilegedRelink) {
+			writeError(w, http.StatusForbidden, "An administrator account already uses this email; contact your administrator to link it", nil)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "Failed to sign in", err)
 		return
 	}

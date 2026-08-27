@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +15,9 @@ import (
 )
 
 func main() {
+	seed := flag.Bool("seed", false, "load development seed data from migrations/seeds after migrating")
+	flag.Parse()
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -42,6 +46,50 @@ func main() {
 	}
 
 	log.Println("Migrations completed successfully")
+
+	if *seed {
+		// The seed data creates an admin user and posts with hardcoded edit
+		// tokens. That is fine for a local demo and unacceptable anywhere real,
+		// so refuse outright outside development.
+		if cfg.Server.Environment != "development" {
+			log.Fatalf("refusing to load seed data with ENVIRONMENT=%q; seeds are development-only", cfg.Server.Environment)
+		}
+		if err := runSeeds(ctx, conn); err != nil {
+			log.Fatalf("Failed to load seed data: %v", err)
+		}
+		log.Println("Seed data loaded")
+	}
+}
+
+// runSeeds applies every .sql file in migrations/seeds. Seeds are not tracked
+// in the migrations table: they are development fixtures, not schema changes,
+// and re-running them is the caller's business.
+func runSeeds(ctx context.Context, conn *pgx.Conn) error {
+	seedsDir := filepath.Join("migrations", "seeds")
+	entries, err := os.ReadDir(seedsDir)
+	if err != nil {
+		return fmt.Errorf("failed to read seeds directory: %w", err)
+	}
+
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		content, err := os.ReadFile(filepath.Join(seedsDir, name))
+		if err != nil {
+			return fmt.Errorf("failed to read seed %s: %w", name, err)
+		}
+		log.Printf("Loading seed: %s", name)
+		if _, err := conn.Exec(ctx, string(content)); err != nil {
+			return fmt.Errorf("failed to apply seed %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func runMigrations(ctx context.Context, conn *pgx.Conn) error {
