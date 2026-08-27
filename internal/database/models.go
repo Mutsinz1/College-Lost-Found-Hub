@@ -155,11 +155,6 @@ type SearchPostsRequest struct {
 	Offset          int        `json:"offset"`
 }
 
-// ClaimPostRequest represents a request to claim a post
-type ClaimPostRequest struct {
-	PostID uuid.UUID `json:"post_id"`
-}
-
 // CreateInteractionRequest represents a request to create an interaction on a post
 type CreateInteractionRequest struct {
 	InteractionType string `json:"interaction_type"` // 'claim', 'help', 'report'

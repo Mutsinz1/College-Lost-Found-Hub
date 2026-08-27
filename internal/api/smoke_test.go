@@ -167,20 +167,6 @@ func (m *memStore) GetPostByID(ctx context.Context, id uuid.UUID) (*database.Pos
 	return readCopy(p), nil
 }
 
-func (m *memStore) ClaimPost(ctx context.Context, postID, userID uuid.UUID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	p, ok := m.posts[postID]
-	if !ok || p.Status != "active" {
-		return database.ErrNotFound
-	}
-	p.Status = "claimed"
-	now := time.Now()
-	p.ClaimedBy = &userID
-	p.ClaimedAt = &now
-	return nil
-}
-
 func (m *memStore) checkToken(id uuid.UUID, editToken string) (*database.Post, error) {
 	p, ok := m.posts[id]
 	if !ok {
@@ -312,7 +298,6 @@ func newSmokeServer(t *testing.T) (*httptest.Server, *memStore, string) {
 			r.Get("/{id}", handlers.GetPostByID)
 			r.Put("/{id}", handlers.UpdatePost)
 			r.Delete("/{id}", handlers.DeletePost)
-			r.Post("/{id}/claim", handlers.ClaimPost)
 			r.Post("/{id}/interactions", handlers.CreateInteraction)
 			r.Get("/{id}/interactions", handlers.GetPostInteractions)
 			r.Post("/{id}/reports", handlers.CreateReport)
@@ -834,5 +819,43 @@ func TestAlertSubscriptionFlow(t *testing.T) {
 	json.Unmarshal(env.Data, &list)
 	if list.Total != 0 {
 		t.Errorf("total = %d, want 0 after unsubscribing", list.Total)
+	}
+}
+
+// TestClaimEndpointIsGone guards a removal.
+//
+// POST /api/posts/{id}/claim used to mark a post claimed with no authorization
+// whatsoever: the handler resolved a user, fell back to the anonymous system
+// account when nobody was signed in, and never checked who was asking. Since
+// search only returns active posts, anyone could quietly sweep items off the
+// board. The interactions flow replaced it -- submit a claim, the owner
+// reviews it, the owner accepts, all gated by the owner's edit token -- and
+// the frontend never called the old route at all.
+func TestClaimEndpointIsGone(t *testing.T) {
+	server, store, _ := newSmokeServer(t)
+	client := server.Client()
+
+	postID := uuid.New()
+	store.mu.Lock()
+	store.posts[postID] = &database.Post{
+		ID: postID, Type: "found", Category: "item", Title: "Wallet",
+		Status: "active", EditToken: "tok", PostedBy: store.adminID,
+	}
+	store.mu.Unlock()
+
+	resp, err := client.Post(server.URL+"/api/posts/"+postID.String()+"/claim", "application/json", nil)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 404/405: the unauthenticated claim route must stay removed", resp.StatusCode)
+	}
+
+	store.mu.Lock()
+	status := store.posts[postID].Status
+	store.mu.Unlock()
+	if status != "active" {
+		t.Errorf("post status = %q, want active: nothing should have claimed it", status)
 	}
 }

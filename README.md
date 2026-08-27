@@ -175,7 +175,6 @@ lost & found areas can be created.
 - `GET /api/users/{id}` - Get user details
 
 ### Interactions (claims & help offers)
-- `POST /api/posts/{id}/claim` - Mark item as claimed (quick claim)
 - `POST /api/posts/{id}/interactions` - Submit a claim/help/report with contact info
 - `GET /api/posts/{id}/interactions` - List interactions on your post (requires `X-Edit-Token`)
 - `PUT /api/interactions/{id}` - Accept/reject an interaction (requires `X-Edit-Token`; accepting a claim marks the post claimed)

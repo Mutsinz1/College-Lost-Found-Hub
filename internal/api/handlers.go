@@ -48,7 +48,6 @@ type Store interface {
 	CreatePost(ctx context.Context, req database.CreatePostRequest, userID uuid.UUID, imageURLs []string) (*database.Post, error)
 	SearchPosts(ctx context.Context, req database.SearchPostsRequest) (*database.SearchPostsResponse, error)
 	GetPostByID(ctx context.Context, id uuid.UUID) (*database.Post, error)
-	ClaimPost(ctx context.Context, postID, userID uuid.UUID) error
 	UpdatePost(ctx context.Context, id uuid.UUID, editToken string, req database.UpdatePostRequest) error
 	DeletePost(ctx context.Context, id uuid.UUID, editToken string) ([]string, error)
 	CreateInteraction(ctx context.Context, postID uuid.UUID, req database.CreateInteractionRequest) (*database.Interaction, error)
@@ -490,32 +489,6 @@ func (h *Handler) GetPostByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, post)
-}
-
-// ClaimPost claims a post for a user
-func (h *Handler) ClaimPost(w http.ResponseWriter, r *http.Request) {
-	userID, err := h.currentUserID(r)
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "No user account available; run migrations to create the default user", err)
-		return
-	}
-
-	postID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid post ID", nil)
-		return
-	}
-
-	if err := h.repo.ClaimPost(r.Context(), postID, userID); err != nil {
-		if errors.Is(err, database.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "Post not found or already claimed", nil)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "Failed to claim post", err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Post claimed successfully"})
 }
 
 // UpdatePost updates a post. Requires the post's edit token via the

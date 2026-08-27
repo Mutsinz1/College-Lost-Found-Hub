@@ -109,9 +109,6 @@ export const postsAPI = {
   delete: (id, editToken) => api.delete(`/posts/${id}`, {
     headers: { 'X-Edit-Token': editToken || getEditToken(id) || '' },
   }),
-  
-  // Claim post
-  claim: (id) => api.post(`/posts/${id}/claim`),
 };
 
 // Interactions API (claims / help offers on a post)

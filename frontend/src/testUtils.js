@@ -18,7 +18,7 @@ export const samplePost = (overrides = {}) => ({
 export const apiMockFactory = () => ({
   postsAPI: {
     search: jest.fn(), getById: jest.fn(), create: jest.fn(),
-    update: jest.fn(), delete: jest.fn(), claim: jest.fn(),
+    update: jest.fn(), delete: jest.fn(),
   },
   buildingsAPI: { getAll: jest.fn(), getById: jest.fn() },
   areasAPI: { getAll: jest.fn(), getByBuilding: jest.fn() },

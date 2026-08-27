@@ -210,27 +210,6 @@ func TestInteractionFlow(t *testing.T) {
 	}
 }
 
-func TestClaimPostRowsAffected(t *testing.T) {
-	repo := testRepo(t)
-	ctx := context.Background()
-
-	// Claiming a nonexistent post reports ErrNotFound
-	if err := repo.ClaimPost(ctx, uuid.New(), testUserID(t, repo)); err != ErrNotFound {
-		t.Errorf("ClaimPost on missing post: err = %v, want ErrNotFound", err)
-	}
-
-	post := createTestPost(t, repo)
-	userID := testUserID(t, repo)
-
-	if err := repo.ClaimPost(ctx, post.ID, userID); err != nil {
-		t.Fatalf("ClaimPost failed: %v", err)
-	}
-	// Second claim must fail: the post is no longer active
-	if err := repo.ClaimPost(ctx, post.ID, userID); err != ErrNotFound {
-		t.Errorf("double claim: err = %v, want ErrNotFound", err)
-	}
-}
-
 func TestGetOrCreateUserRefusesPrivilegedRelink(t *testing.T) {
 	repo := testRepo(t)
 	ctx := context.Background()

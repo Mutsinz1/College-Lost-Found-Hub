@@ -105,7 +105,6 @@ func main() {
 			r.Get("/{id}", handlers.GetPostByID)
 			r.Put("/{id}", handlers.UpdatePost)
 			r.Delete("/{id}", handlers.DeletePost)
-			r.Post("/{id}/claim", handlers.ClaimPost)
 			r.Post("/{id}/interactions", handlers.CreateInteraction)
 			r.Get("/{id}/interactions", handlers.GetPostInteractions)
 			r.With(api.RateLimit(cfg.RateLimit.ReportsPerHour, time.Hour)).Post("/{id}/reports", handlers.CreateReport)

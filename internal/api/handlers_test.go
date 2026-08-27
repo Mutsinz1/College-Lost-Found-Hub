@@ -32,7 +32,6 @@ type mockStore struct {
 	createPost              func(ctx context.Context, req database.CreatePostRequest, userID uuid.UUID, imageURLs []string) (*database.Post, error)
 	searchPosts             func(ctx context.Context, req database.SearchPostsRequest) (*database.SearchPostsResponse, error)
 	getPostByID             func(ctx context.Context, id uuid.UUID) (*database.Post, error)
-	claimPost               func(ctx context.Context, postID, userID uuid.UUID) error
 	updatePost              func(ctx context.Context, id uuid.UUID, editToken string, req database.UpdatePostRequest) error
 	deletePost              func(ctx context.Context, id uuid.UUID, editToken string) ([]string, error)
 	createInteraction       func(ctx context.Context, postID uuid.UUID, req database.CreateInteractionRequest) (*database.Interaction, error)
@@ -82,9 +81,6 @@ func (m *mockStore) SearchPosts(ctx context.Context, req database.SearchPostsReq
 func (m *mockStore) GetPostByID(ctx context.Context, id uuid.UUID) (*database.Post, error) {
 	return m.getPostByID(ctx, id)
 }
-func (m *mockStore) ClaimPost(ctx context.Context, postID, userID uuid.UUID) error {
-	return m.claimPost(ctx, postID, userID)
-}
 func (m *mockStore) UpdatePost(ctx context.Context, id uuid.UUID, editToken string, req database.UpdatePostRequest) error {
 	return m.updatePost(ctx, id, editToken, req)
 }
@@ -113,7 +109,6 @@ func newTestRouter(t *testing.T, store *mockStore) *chi.Mux {
 			r.Get("/{id}", h.GetPostByID)
 			r.Put("/{id}", h.UpdatePost)
 			r.Delete("/{id}", h.DeletePost)
-			r.Post("/{id}/claim", h.ClaimPost)
 			r.Post("/{id}/interactions", h.CreateInteraction)
 			r.Get("/{id}/interactions", h.GetPostInteractions)
 		})
@@ -194,20 +189,6 @@ func TestDeletePostRequiresEditToken(t *testing.T) {
 	rec := doJSON(t, router, http.MethodDelete, "/api/posts/"+uuid.NewString(), nil, nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rec.Code)
-	}
-}
-
-func TestClaimPostNotFound(t *testing.T) {
-	store := &mockStore{
-		getDefaultUserID: func(ctx context.Context) (uuid.UUID, error) { return uuid.New(), nil },
-		claimPost: func(ctx context.Context, postID, userID uuid.UUID) error {
-			return database.ErrNotFound
-		},
-	}
-	router := newTestRouter(t, store)
-	rec := doJSON(t, router, http.MethodPost, "/api/posts/"+uuid.NewString()+"/claim", nil, nil)
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }
 

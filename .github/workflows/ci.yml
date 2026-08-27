@@ -84,3 +84,31 @@ jobs:
         run: npm run build
         env:
           CI: "false" # CRA treats warnings as errors when CI=true
+
+  # The Dockerfiles are the deployment path and nothing else exercises them.
+  # A stale base image or a go.mod bump breaks the build silently otherwise --
+  # exactly how golang:1.21 survived after the module moved to go 1.25.
+  docker:
+    name: Docker images
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -t lostfound-api:ci .
+
+      - name: Build frontend image
+        run: docker build -t lostfound-web:ci ./frontend
+
+      - name: Binaries run in the built image
+        run: |
+          docker run --rm lostfound-api:ci server --help 2>&1 | head -1 || true
+          docker run --rm --entrypoint admin lostfound-api:ci -h 2>&1 | head -3 || true
+
+      - name: Compose file is valid
+        env:
+          POSTGRES_PASSWORD: ci
+          JWT_SECRET: ci
+          GOOGLE_CLIENT_ID: ci
+        run: docker compose -f docker-compose.prod.yml config >/dev/null

@@ -696,24 +696,6 @@ func derefUUID(u *uuid.UUID) uuid.UUID {
 	return *u
 }
 
-// ClaimPost claims a post for a user
-func (r *Repository) ClaimPost(ctx context.Context, postID, userID uuid.UUID) error {
-	query := `
-		UPDATE posts
-		SET claimed_by = $1, claimed_at = now(), status = 'claimed'
-		WHERE id = $2 AND status = 'active' AND claimed_by IS NULL`
-
-	rows, err := r.db.ExecRows(ctx, query, userID, postID)
-	if err != nil {
-		return fmt.Errorf("failed to claim post: %w", err)
-	}
-	if rows == 0 {
-		return ErrNotFound
-	}
-
-	return nil
-}
-
 // verifyEditToken checks that the supplied edit token matches the post's stored
 // token. Returns ErrNotFound if the post does not exist and ErrInvalidEditToken
 // if the token does not match. It also returns the post's image URLs so callers
