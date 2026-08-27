@@ -77,6 +77,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test
+        run: npm test -- --watchAll=false
+
       - name: Build
         run: npm run build
         env:

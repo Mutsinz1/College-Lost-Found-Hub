@@ -246,7 +246,9 @@ docker-compose down
 2. **Frontend Can't Connect to Backend**
    - Ensure backend is running on port 8080
    - Check CORS configuration
-   - Verify proxy settings in package.json
+   - The dev server calls the API directly at `REACT_APP_API_URL`
+     (default `http://localhost:8080/api`), so check `ALLOWED_ORIGINS`
+     includes `http://localhost:3000` rather than looking for a CRA proxy
    - Check browser console for errors
 
 3. **Database Connection Issues**
