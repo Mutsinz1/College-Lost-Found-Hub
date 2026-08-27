@@ -341,7 +341,7 @@ const Home = () => {
                       </p>
                     )}
                     <p className="text-xs text-gray-500 mb-2">
-                      {Math.round(post.distance)}m away • {new Date(post.created_at).toLocaleDateString()}
+                      {Number.isFinite(post.distance) ? `${Math.round(post.distance)}m away • ` : ''}{new Date(post.created_at).toLocaleDateString()}
                     </p>
                     <Link
                       to={`/post/${post.id}`}
@@ -406,7 +406,7 @@ const Home = () => {
                   )}
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-4 text-xs text-gray-500">
-                      <span>{Math.round(post.distance)}m away</span>
+                      {Number.isFinite(post.distance) && <span>{Math.round(post.distance)}m away</span>}
                       <span>{new Date(post.created_at).toLocaleDateString()}</span>
                     </div>
                     <Link

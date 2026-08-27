@@ -80,3 +80,6 @@ temp/
 
 # Compiled binaries
 main
+# Sync-service conflict copies ("file 2.go"). These break the Go build with
+# duplicate declarations and must never be committed.
+*\ 2.*

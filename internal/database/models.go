@@ -73,7 +73,10 @@ type Post struct {
 	LostFoundArea *LostFoundArea `json:"lost_found_area,omitempty"`
 	PostedByUser  *User          `json:"posted_by_user,omitempty"`
 	ClaimedByUser *User          `json:"claimed_by_user,omitempty"`
-	Distance      float64        `json:"distance,omitempty"` // Distance from search location
+	// Distance from the search location, in metres. No omitempty: a post at
+	// the caller's exact position has distance 0, and omitting it makes the
+	// field vanish from the JSON, which renders as NaN in the UI.
+	Distance float64 `json:"distance"`
 }
 
 // Point represents a geographic point
