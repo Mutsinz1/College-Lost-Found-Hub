@@ -116,7 +116,7 @@ func (r *Repository) CreateBuilding(ctx context.Context, req CreateBuildingReque
 		          is_active, created_at, updated_at`
 
 	pointText := fmt.Sprintf("POINT(%f %f)", req.Longitude, req.Latitude)
-	
+
 	var building Building
 	err := r.db.QueryRow(ctx, query, req.Name, req.Description, pointText).Scan(
 		&building.ID,
@@ -255,8 +255,8 @@ func (r *Repository) CreateLostFoundArea(ctx context.Context, req CreateLostFoun
 		RETURNING id, building_id, name, location_description, contact_person, hours_of_operation, pickup_instructions, is_active, created_at, updated_at`
 
 	var area LostFoundArea
-	err := r.db.QueryRow(ctx, query, 
-		req.BuildingID, req.Name, req.LocationDescription, 
+	err := r.db.QueryRow(ctx, query,
+		req.BuildingID, req.Name, req.LocationDescription,
 		req.ContactPerson, req.HoursOfOperation, req.PickupInstructions,
 	).Scan(
 		&area.ID,
@@ -376,7 +376,7 @@ func (r *Repository) CreatePost(ctx context.Context, req CreatePostRequest, user
 	editToken := uuid.New().String()
 
 	var post Post
-	err := r.db.QueryRow(ctx, query, 
+	err := r.db.QueryRow(ctx, query,
 		req.Type, req.Category, req.Title, req.Description, pointText,
 		req.LostFoundAreaID, userID, req.IsLostItem, req.ContactEmail, req.PosterName,
 		editToken, imageURLs,
@@ -566,16 +566,16 @@ func (r *Repository) GetPostByID(ctx context.Context, id uuid.UUID) (*Post, erro
 
 	var post Post
 	var (
-		lfaID, lfaBuildingID                             *uuid.UUID
-		lfaName, lfaLocDesc, lfaContact                  *string
-		lfaHours, lfaPickup                              *string
-		lfaActive                                        *bool
-		lfaCreated, lfaUpdated                           *time.Time
-		bID                                              *uuid.UUID
-		bName, bDesc                                     *string
-		bLat, bLng                                       *float64
-		bActive                                          *bool
-		bCreated, bUpdated                               *time.Time
+		lfaID, lfaBuildingID            *uuid.UUID
+		lfaName, lfaLocDesc, lfaContact *string
+		lfaHours, lfaPickup             *string
+		lfaActive                       *bool
+		lfaCreated, lfaUpdated          *time.Time
+		bID                             *uuid.UUID
+		bName, bDesc                    *string
+		bLat, bLng                      *float64
+		bActive                         *bool
+		bCreated, bUpdated              *time.Time
 	)
 
 	err := r.db.QueryRow(ctx, query, id).Scan(
@@ -914,4 +914,4 @@ func (r *Repository) GetDefaultUserID(ctx context.Context) (uuid.UUID, error) {
 		return uuid.Nil, fmt.Errorf("failed to get default user: %w", err)
 	}
 	return id, nil
-} 
+}

@@ -41,8 +41,8 @@ type AuthConfig struct {
 }
 
 type UploadConfig struct {
-	Dir        string
-	MaxSize    int64
+	Dir          string
+	MaxSize      int64
 	AllowedTypes []string
 }
 
@@ -146,4 +146,4 @@ func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 		}
 	}
 	return defaultValue
-} 
+}
