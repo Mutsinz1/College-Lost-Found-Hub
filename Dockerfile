@@ -1,7 +1,7 @@
 # Backend: build the server and migrate binaries, then ship them on a small
 # runtime image. The migrations and seed SQL are copied in because the migrate
 # binary reads them from disk at runtime.
-FROM golang:1.21-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
