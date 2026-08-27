@@ -368,62 +368,90 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) SearchPosts(w http.ResponseWriter, r *http.Request) {
 	req := database.SearchPostsRequest{}
 
-	// Location parameters
-	if latStr := r.URL.Query().Get("lat"); latStr != "" {
-		if lat, err := strconv.ParseFloat(latStr, 64); err == nil {
-			req.Latitude = lat
+	// Location parameters. An absent param means "not filtering by it"; a
+	// malformed one is a client error, so report it instead of silently
+	// falling back to a default the caller never asked for.
+	q := r.URL.Query()
+	if latStr := q.Get("lat"); latStr != "" {
+		lat, err := strconv.ParseFloat(latStr, 64)
+		if err != nil || lat < -90 || lat > 90 {
+			writeError(w, http.StatusBadRequest, "lat must be a number between -90 and 90", nil)
+			return
 		}
+		req.Latitude = lat
 	}
-	if lngStr := r.URL.Query().Get("lng"); lngStr != "" {
-		if lng, err := strconv.ParseFloat(lngStr, 64); err == nil {
-			req.Longitude = lng
+	if lngStr := q.Get("lng"); lngStr != "" {
+		lng, err := strconv.ParseFloat(lngStr, 64)
+		if err != nil || lng < -180 || lng > 180 {
+			writeError(w, http.StatusBadRequest, "lng must be a number between -180 and 180", nil)
+			return
 		}
+		req.Longitude = lng
 	}
-	if radiusStr := r.URL.Query().Get("radius"); radiusStr != "" {
-		if radius, err := strconv.Atoi(radiusStr); err == nil && radius > 0 {
-			req.Radius = radius
+	if radiusStr := q.Get("radius"); radiusStr != "" {
+		radius, err := strconv.Atoi(radiusStr)
+		if err != nil || radius <= 0 {
+			writeError(w, http.StatusBadRequest, "radius must be a positive integer (metres)", nil)
+			return
 		}
+		req.Radius = radius
 	}
 
 	// Filter parameters. These map to Postgres enum columns, so reject unknown
 	// values here rather than letting the driver fail with a 500.
-	req.Type = r.URL.Query().Get("type")
+	req.Type = q.Get("type")
 	if req.Type != "" && !validTypes[req.Type] {
 		writeError(w, http.StatusBadRequest, "type must be 'lost' or 'found'", nil)
 		return
 	}
-	req.Category = r.URL.Query().Get("category")
+	req.Category = q.Get("category")
 	if req.Category != "" && !validCategories[req.Category] {
 		writeError(w, http.StatusBadRequest, "category must be one of: pet, document, item, other", nil)
 		return
 	}
 
-	if buildingIDStr := r.URL.Query().Get("building_id"); buildingIDStr != "" {
-		if buildingID, err := uuid.Parse(buildingIDStr); err == nil {
-			req.BuildingID = &buildingID
+	if buildingIDStr := q.Get("building_id"); buildingIDStr != "" {
+		buildingID, err := uuid.Parse(buildingIDStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "building_id must be a valid UUID", nil)
+			return
 		}
+		req.BuildingID = &buildingID
 	}
-	if areaIDStr := r.URL.Query().Get("lost_found_area_id"); areaIDStr != "" {
-		if areaID, err := uuid.Parse(areaIDStr); err == nil {
-			req.LostFoundAreaID = &areaID
+	if areaIDStr := q.Get("lost_found_area_id"); areaIDStr != "" {
+		areaID, err := uuid.Parse(areaIDStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "lost_found_area_id must be a valid UUID", nil)
+			return
 		}
+		req.LostFoundAreaID = &areaID
 	}
-	if isLostItemStr := r.URL.Query().Get("is_lost_item"); isLostItemStr != "" {
-		if isLostItem, err := strconv.ParseBool(isLostItemStr); err == nil {
-			req.IsLostItem = &isLostItem
+	if isLostItemStr := q.Get("is_lost_item"); isLostItemStr != "" {
+		isLostItem, err := strconv.ParseBool(isLostItemStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "is_lost_item must be true or false", nil)
+			return
 		}
+		req.IsLostItem = &isLostItem
 	}
 
-	// Pagination (clamped again in the repository)
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if limit, err := strconv.Atoi(limitStr); err == nil {
-			req.Limit = limit
+	// Pagination. Values are range-clamped again in the repository; here we
+	// only reject input that is outright malformed or nonsensical.
+	if limitStr := q.Get("limit"); limitStr != "" {
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil || limit <= 0 {
+			writeError(w, http.StatusBadRequest, "limit must be a positive integer", nil)
+			return
 		}
+		req.Limit = limit
 	}
-	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
-		if offset, err := strconv.Atoi(offsetStr); err == nil {
-			req.Offset = offset
+	if offsetStr := q.Get("offset"); offsetStr != "" {
+		offset, err := strconv.Atoi(offsetStr)
+		if err != nil || offset < 0 {
+			writeError(w, http.StatusBadRequest, "offset must be a non-negative integer", nil)
+			return
 		}
+		req.Offset = offset
 	}
 
 	response, err := h.repo.SearchPosts(r.Context(), req)

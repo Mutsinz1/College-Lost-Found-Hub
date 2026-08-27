@@ -383,6 +383,75 @@ func TestSearchPostsRejectsInvalidEnums(t *testing.T) {
 	}
 }
 
+func TestSearchPostsRejectsMalformedParams(t *testing.T) {
+	// A malformed param is a client error. Silently discarding it would run a
+	// different query than the caller asked for and quietly return wrong results.
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"non-numeric lat", "/api/posts?lat=abc"},
+		{"lat out of range", "/api/posts?lat=91"},
+		{"lng out of range", "/api/posts?lng=-181"},
+		{"negative radius", "/api/posts?lat=40.5&lng=-73.9&radius=-500"},
+		{"zero radius", "/api/posts?lat=40.5&lng=-73.9&radius=0"},
+		{"non-numeric radius", "/api/posts?lat=40.5&lng=-73.9&radius=far"},
+		{"bad building uuid", "/api/posts?building_id=not-a-uuid"},
+		{"bad area uuid", "/api/posts?lost_found_area_id=not-a-uuid"},
+		{"bad bool", "/api/posts?is_lost_item=maybe"},
+		{"negative limit", "/api/posts?limit=-1"},
+		{"non-numeric limit", "/api/posts?limit=all"},
+		{"negative offset", "/api/posts?offset=-5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			store := &mockStore{
+				searchPosts: func(ctx context.Context, req database.SearchPostsRequest) (*database.SearchPostsResponse, error) {
+					called = true
+					return &database.SearchPostsResponse{Posts: []database.Post{}}, nil
+				},
+			}
+			router := newTestRouter(t, store)
+
+			rec := doJSON(t, router, http.MethodGet, tc.query, nil, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+			if called {
+				t.Error("malformed param reached the store; it should be rejected in the handler")
+			}
+		})
+	}
+}
+
+func TestSearchPostsAcceptsValidParams(t *testing.T) {
+	// The boundary values must still be accepted.
+	var got database.SearchPostsRequest
+	store := &mockStore{
+		searchPosts: func(ctx context.Context, req database.SearchPostsRequest) (*database.SearchPostsResponse, error) {
+			got = req
+			return &database.SearchPostsResponse{Posts: []database.Post{}}, nil
+		},
+	}
+	router := newTestRouter(t, store)
+
+	rec := doJSON(t, router, http.MethodGet,
+		"/api/posts?lat=-90&lng=180&radius=1&limit=1&offset=0&is_lost_item=false", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got.Latitude != -90 || got.Longitude != 180 {
+		t.Errorf("location = (%v, %v), want (-90, 180)", got.Latitude, got.Longitude)
+	}
+	if got.Radius != 1 || got.Limit != 1 || got.Offset != 0 {
+		t.Errorf("radius/limit/offset = %d/%d/%d, want 1/1/0", got.Radius, got.Limit, got.Offset)
+	}
+	if got.IsLostItem == nil || *got.IsLostItem {
+		t.Error("is_lost_item should parse as false, not nil")
+	}
+}
+
 func TestSearchPostsAllowsEmptyEnums(t *testing.T) {
 	// Omitted filters are not the same as invalid ones.
 	store := &mockStore{
