@@ -10,14 +10,15 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -o /out/server ./cmd/server \
- && CGO_ENABLED=0 go build -o /out/migrate ./cmd/migrate
+ && CGO_ENABLED=0 go build -o /out/migrate ./cmd/migrate \
+ && CGO_ENABLED=0 go build -o /out/admin ./cmd/admin
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates \
  && adduser -D -u 10001 app
 WORKDIR /app
 
-COPY --from=build /out/server /out/migrate /usr/local/bin/
+COPY --from=build /out/server /out/migrate /out/admin /usr/local/bin/
 COPY migrations ./migrations
 
 # Uploads are bind-mounted in compose; create it so the server can write even

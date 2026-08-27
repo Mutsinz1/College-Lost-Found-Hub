@@ -1074,3 +1074,66 @@ func (r *Repository) DeactivateAlert(ctx context.Context, id uuid.UUID, email st
 	}
 	return nil
 }
+
+// Role administration
+//
+// These back the cmd/admin CLI. There is deliberately no HTTP route that grants
+// a role: privilege comes from an operator with database access, never from
+// anything reachable over the network.
+
+// ErrSystemAccount indicates an operation targeted the built-in anonymous
+// account, which must stay unprivileged.
+var ErrSystemAccount = errors.New("cannot change the role of the system account")
+
+// SetUserRole assigns a role to the user with the given email. The user must
+// already exist: roles are granted to people who have signed in, not conjured
+// for addresses nobody has proven they control.
+func (r *Repository) SetUserRole(ctx context.Context, email, role string) (*User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+
+	var ssoID string
+	err := r.db.QueryRow(ctx, `SELECT sso_id FROM users WHERE lower(email) = $1`, email).Scan(&ssoID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to look up user: %w", err)
+	}
+	if ssoID == SystemAnonymousSSOID {
+		return nil, ErrSystemAccount
+	}
+
+	var user User
+	err = r.db.QueryRow(ctx, `
+		UPDATE users SET role = $2, updated_at = now()
+		WHERE lower(email) = $1
+		RETURNING id, sso_id, email, name, role, is_active, created_at, updated_at`,
+		email, role).Scan(&user.ID, &user.SSOID, &user.Email, &user.Name,
+		&user.Role, &user.IsActive, &user.CreatedAt, &user.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set role: %w", err)
+	}
+	return &user, nil
+}
+
+// ListUsersByRole returns the users holding a role, oldest first.
+func (r *Repository) ListUsersByRole(ctx context.Context, role string) ([]User, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, sso_id, email, name, role, is_active, created_at, updated_at
+		FROM users WHERE role = $1 ORDER BY created_at`, role)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list users: %w", err)
+	}
+	defer rows.Close()
+
+	users := []User{}
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.SSOID, &u.Email, &u.Name, &u.Role,
+			&u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}

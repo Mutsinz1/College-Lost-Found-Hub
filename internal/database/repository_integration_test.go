@@ -345,3 +345,79 @@ func TestGetDefaultUserIDIgnoresAdmins(t *testing.T) {
 		t.Errorf("default user changed from %s to %s when an admin was added", before, after)
 	}
 }
+
+func TestSetUserRolePromotesAndDemotes(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	email := fmt.Sprintf("promote-%s@college.edu", uuid.NewString()[:8])
+	created, err := repo.GetOrCreateUser(ctx, SSOUser{SSOID: "dev:" + email, Email: email, Name: "Candidate"})
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = repo.db.Exec(context.Background(), `DELETE FROM users WHERE email = $1`, email)
+	})
+	if created.Role != "user" {
+		t.Fatalf("new users should start as 'user', got %q", created.Role)
+	}
+
+	// Email matching is case-insensitive: operators type addresses by hand.
+	promoted, err := repo.SetUserRole(ctx, strings.ToUpper(email), "admin")
+	if err != nil {
+		t.Fatalf("promote failed: %v", err)
+	}
+	if promoted.Role != "admin" || promoted.ID != created.ID {
+		t.Errorf("promote changed the wrong row: id=%s role=%q", promoted.ID, promoted.Role)
+	}
+
+	admins, err := repo.ListUsersByRole(ctx, "admin")
+	if err != nil {
+		t.Fatalf("list admins failed: %v", err)
+	}
+	found := false
+	for _, a := range admins {
+		if a.ID == created.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("promoted user is missing from the admin list")
+	}
+
+	demoted, err := repo.SetUserRole(ctx, email, "user")
+	if err != nil {
+		t.Fatalf("demote failed: %v", err)
+	}
+	if demoted.Role != "user" {
+		t.Errorf("role = %q, want user", demoted.Role)
+	}
+}
+
+func TestSetUserRoleRejectsUnknownAndSystemAccounts(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	// Roles are granted to people who have signed in, not to arbitrary
+	// addresses: no row means no promotion.
+	if _, err := repo.SetUserRole(ctx, "never-signed-in@college.edu", "admin"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+
+	// The account that owns anonymous posts must stay unprivileged.
+	var systemEmail string
+	if err := repo.db.QueryRow(ctx, `SELECT email FROM users WHERE sso_id = $1`, SystemAnonymousSSOID).Scan(&systemEmail); err != nil {
+		t.Fatalf("failed to find the system account: %v", err)
+	}
+	if _, err := repo.SetUserRole(ctx, systemEmail, "admin"); !errors.Is(err, ErrSystemAccount) {
+		t.Errorf("err = %v, want ErrSystemAccount", err)
+	}
+
+	var role string
+	if err := repo.db.QueryRow(ctx, `SELECT role FROM users WHERE sso_id = $1`, SystemAnonymousSSOID).Scan(&role); err != nil {
+		t.Fatalf("failed to re-read the system account: %v", err)
+	}
+	if role != "user" {
+		t.Errorf("system account role = %q, want user", role)
+	}
+}

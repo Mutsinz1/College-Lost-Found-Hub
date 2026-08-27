@@ -16,6 +16,7 @@ help:
 build:
 	go build -o bin/server cmd/server/main.go
 	go build -o bin/migrate cmd/migrate/main.go
+	go build -o bin/admin cmd/admin/main.go
 
 # Run the server
 run: build
@@ -31,6 +32,10 @@ clean:
 	rm -rf uploads/
 
 # Run database migrations
+admin: build
+	./bin/admin $(ARGS)
+
+# Run migrations
 migrate: build
 	./bin/migrate
 

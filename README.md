@@ -88,7 +88,9 @@ A modern web application for managing lost and found items within college campus
 
    The seed data includes an account with the `admin` role and posts with
    well-known edit tokens, so `-seed` refuses to run unless
-   `ENVIRONMENT=development`.
+   `ENVIRONMENT=development`. Without it the database starts empty; sign in
+   once and run `go run cmd/admin/main.go -promote you@college.edu` to create
+   the first admin.
 
 5. **Start the backend server**:
    ```bash
@@ -150,6 +152,22 @@ Lost&Found/
 - `GET /api/areas` - Get all lost & found areas
 - `GET /api/areas/building/{buildingId}` - Get areas by building
 - `POST /api/areas` - Create lost & found area (admin only)
+
+### Administration
+
+There is no HTTP route that grants the admin role, and no admin account is
+created by default. Privilege comes from an operator with database access:
+
+```bash
+go run cmd/admin/main.go -list                        # who is an admin
+go run cmd/admin/main.go -promote alice@college.edu   # grant
+go run cmd/admin/main.go -demote alice@college.edu    # revoke
+```
+
+The user must have signed in at least once, so that their row exists. The role
+is carried in the session token, so they must sign in again after a change for
+it to take effect. A fresh deployment needs one admin before buildings and
+lost & found areas can be created.
 
 ### Authentication
 - `POST /api/auth/google` - Exchange a Google ID token for an app session token
