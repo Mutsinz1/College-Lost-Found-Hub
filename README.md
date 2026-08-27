@@ -162,6 +162,20 @@ Lost&Found/
 - `GET /api/posts/{id}/interactions` - List interactions on your post (requires `X-Edit-Token`)
 - `PUT /api/interactions/{id}` - Accept/reject an interaction (requires `X-Edit-Token`; accepting a claim marks the post claimed)
 
+### Moderation
+- `POST /api/posts/{id}/reports` - Report a post (open to anyone; `reason` must be one of spam, inappropriate, fraudulent, wrong_info, other)
+- `GET /api/reports` - List reports, optionally `?status=pending|reviewed|resolved` (admin only)
+- `PUT /api/reports/{id}` - Set a report's status (admin only)
+
+### Alerts
+- `POST /api/alerts` - Subscribe an email address to posts near a location
+- `GET /api/alerts?email=...` - List that address's active alerts
+- `DELETE /api/alerts/{id}?email=...` - Unsubscribe (the email must match the one that created it)
+
+> Alerts are recorded but **not yet delivered**: nothing dispatches mail, so
+> subscriptions accumulate without sending anything. The SMTP settings in
+> `env.example` are read by config but unused until a dispatcher exists.
+
 ## ⚙️ Configuration
 
 ### Environment Variables

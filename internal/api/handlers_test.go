@@ -38,6 +38,12 @@ type mockStore struct {
 	createInteraction       func(ctx context.Context, postID uuid.UUID, req database.CreateInteractionRequest) (*database.Interaction, error)
 	getInteractionsByPost   func(ctx context.Context, postID uuid.UUID, editToken string) ([]database.Interaction, error)
 	updateInteractionStatus func(ctx context.Context, interactionID uuid.UUID, editToken, newStatus string) error
+	createReport            func(ctx context.Context, postID uuid.UUID, req database.CreateReportRequest) (*database.Report, error)
+	getReports              func(ctx context.Context, status string) ([]database.Report, error)
+	updateReportStatus      func(ctx context.Context, id uuid.UUID, status string) error
+	createAlert             func(ctx context.Context, req database.CreateAlertRequest) (*database.Alert, error)
+	getAlertsByEmail        func(ctx context.Context, email string) ([]database.Alert, error)
+	deactivateAlert         func(ctx context.Context, id uuid.UUID, email string) error
 }
 
 func (m *mockStore) GetBuildings(ctx context.Context) ([]database.Building, error) {
@@ -581,4 +587,46 @@ func TestRequireAdmin(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("admin role: status = %d, want 200", rec.Code)
 	}
+}
+
+func (m *mockStore) CreateReport(ctx context.Context, postID uuid.UUID, req database.CreateReportRequest) (*database.Report, error) {
+	if m.createReport != nil {
+		return m.createReport(ctx, postID, req)
+	}
+	return &database.Report{ID: uuid.New(), PostID: &postID, Reason: req.Reason, Status: "pending"}, nil
+}
+
+func (m *mockStore) GetReports(ctx context.Context, status string) ([]database.Report, error) {
+	if m.getReports != nil {
+		return m.getReports(ctx, status)
+	}
+	return []database.Report{}, nil
+}
+
+func (m *mockStore) UpdateReportStatus(ctx context.Context, id uuid.UUID, status string) error {
+	if m.updateReportStatus != nil {
+		return m.updateReportStatus(ctx, id, status)
+	}
+	return nil
+}
+
+func (m *mockStore) CreateAlert(ctx context.Context, req database.CreateAlertRequest) (*database.Alert, error) {
+	if m.createAlert != nil {
+		return m.createAlert(ctx, req)
+	}
+	return &database.Alert{ID: uuid.New(), Email: req.Email, RadiusMeters: req.RadiusMeters, IsActive: true}, nil
+}
+
+func (m *mockStore) GetAlertsByEmail(ctx context.Context, email string) ([]database.Alert, error) {
+	if m.getAlertsByEmail != nil {
+		return m.getAlertsByEmail(ctx, email)
+	}
+	return []database.Alert{}, nil
+}
+
+func (m *mockStore) DeactivateAlert(ctx context.Context, id uuid.UUID, email string) error {
+	if m.deactivateAlert != nil {
+		return m.deactivateAlert(ctx, id, email)
+	}
+	return nil
 }

@@ -29,6 +29,8 @@ var validTypes = map[string]bool{"lost": true, "found": true}
 var validCategories = map[string]bool{"pet": true, "document": true, "item": true, "other": true}
 var validStatuses = map[string]bool{"active": true, "claimed": true, "resolved": true}
 var validInteractionTypes = map[string]bool{"claim": true, "help": true, "report": true}
+var validReportReasons = map[string]bool{"spam": true, "inappropriate": true, "fraudulent": true, "wrong_info": true, "other": true}
+var validReportStatuses = map[string]bool{"pending": true, "reviewed": true, "resolved": true}
 var validInteractionStatuses = map[string]bool{"accepted": true, "rejected": true}
 
 // Store is the data-access interface the HTTP handlers depend on. It is
@@ -52,6 +54,12 @@ type Store interface {
 	CreateInteraction(ctx context.Context, postID uuid.UUID, req database.CreateInteractionRequest) (*database.Interaction, error)
 	GetInteractionsByPost(ctx context.Context, postID uuid.UUID, editToken string) ([]database.Interaction, error)
 	UpdateInteractionStatus(ctx context.Context, interactionID uuid.UUID, editToken, newStatus string) error
+	CreateReport(ctx context.Context, postID uuid.UUID, req database.CreateReportRequest) (*database.Report, error)
+	GetReports(ctx context.Context, status string) ([]database.Report, error)
+	UpdateReportStatus(ctx context.Context, id uuid.UUID, status string) error
+	CreateAlert(ctx context.Context, req database.CreateAlertRequest) (*database.Alert, error)
+	GetAlertsByEmail(ctx context.Context, email string) ([]database.Alert, error)
+	DeactivateAlert(ctx context.Context, id uuid.UUID, email string) error
 }
 
 // Handler provides HTTP handlers for the API
@@ -711,4 +719,184 @@ func (h *Handler) UpdateInteraction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Interaction updated successfully"})
+}
+
+// Report handlers
+
+// CreateReport files an abuse report against a post. Open to anyone: the point
+// is to hear about bad content from people who are not signed in.
+func (h *Handler) CreateReport(w http.ResponseWriter, r *http.Request) {
+	postID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid post ID", nil)
+		return
+	}
+
+	var req database.CreateReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if !validReportReasons[req.Reason] {
+		writeError(w, http.StatusBadRequest, "reason must be one of: spam, inappropriate, fraudulent, wrong_info, other", nil)
+		return
+	}
+	req.ReporterEmail = strings.TrimSpace(req.ReporterEmail)
+	if req.ReporterEmail != "" && !strings.Contains(req.ReporterEmail, "@") {
+		writeError(w, http.StatusBadRequest, "reporter_email must be a valid email address", nil)
+		return
+	}
+
+	report, err := h.repo.CreateReport(r.Context(), postID, req)
+	if err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "Post not found", nil)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to file report", err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, report)
+}
+
+// GetReports lists reports for moderators. Admin only: reports carry the
+// reporter's email and accusations about other people's posts.
+func (h *Handler) GetReports(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	if status != "" && !validReportStatuses[status] {
+		writeError(w, http.StatusBadRequest, "status must be one of: pending, reviewed, resolved", nil)
+		return
+	}
+
+	reports, err := h.repo.GetReports(r.Context(), status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to list reports", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, database.ReportsResponse{Reports: reports, Total: len(reports)})
+}
+
+// UpdateReport records a moderator's decision on a report.
+func (h *Handler) UpdateReport(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid report ID", nil)
+		return
+	}
+
+	var req database.UpdateReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if !validReportStatuses[req.Status] {
+		writeError(w, http.StatusBadRequest, "status must be one of: pending, reviewed, resolved", nil)
+		return
+	}
+
+	if err := h.repo.UpdateReportStatus(r.Context(), id, req.Status); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "Report not found", nil)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to update report", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": req.Status})
+}
+
+// Alert handlers
+
+// CreateAlert subscribes an email address to posts appearing near a location.
+//
+// NOTE: this records the subscription. Nothing sends mail yet -- there is no
+// dispatcher wired to SMTP -- so alerts accumulate and are never delivered.
+func (h *Handler) CreateAlert(w http.ResponseWriter, r *http.Request) {
+	var req database.CreateAlertRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+
+	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	if req.Email == "" || !strings.Contains(req.Email, "@") {
+		writeError(w, http.StatusBadRequest, "email must be a valid email address", nil)
+		return
+	}
+	if req.Latitude < -90 || req.Latitude > 90 {
+		writeError(w, http.StatusBadRequest, "latitude must be between -90 and 90", nil)
+		return
+	}
+	if req.Longitude < -180 || req.Longitude > 180 {
+		writeError(w, http.StatusBadRequest, "longitude must be between -180 and 180", nil)
+		return
+	}
+	if req.RadiusMeters <= 0 {
+		req.RadiusMeters = 5000
+	}
+	if req.RadiusMeters > 50000 {
+		writeError(w, http.StatusBadRequest, "radius_meters must be 50000 or less", nil)
+		return
+	}
+	for _, c := range req.Categories {
+		if !validCategories[c] {
+			writeError(w, http.StatusBadRequest, "categories must be among: pet, document, item, other", nil)
+			return
+		}
+	}
+
+	alert, err := h.repo.CreateAlert(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to create alert", err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, alert)
+}
+
+// GetAlerts lists the alerts for an email address.
+func (h *Handler) GetAlerts(w http.ResponseWriter, r *http.Request) {
+	email := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("email")))
+	if email == "" || !strings.Contains(email, "@") {
+		writeError(w, http.StatusBadRequest, "email query parameter is required", nil)
+		return
+	}
+
+	alerts, err := h.repo.GetAlertsByEmail(r.Context(), email)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to list alerts", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, database.AlertsResponse{Alerts: alerts, Total: len(alerts)})
+}
+
+// DeleteAlert unsubscribes an alert. The caller must supply the email the
+// alert was created with, so an ID on its own does not let someone else
+// unsubscribe you.
+func (h *Handler) DeleteAlert(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid alert ID", nil)
+		return
+	}
+	email := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("email")))
+	if email == "" {
+		writeError(w, http.StatusBadRequest, "email query parameter is required", nil)
+		return
+	}
+
+	if err := h.repo.DeactivateAlert(r.Context(), id, email); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "Alert not found", nil)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to delete alert", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

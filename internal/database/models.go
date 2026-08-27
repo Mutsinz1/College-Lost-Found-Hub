@@ -229,3 +229,37 @@ type LostFoundAreasResponse struct {
 type UserResponse struct {
 	User User `json:"user"`
 }
+
+// CreateReportRequest represents a request to report a post
+type CreateReportRequest struct {
+	ReporterEmail string `json:"reporter_email"`
+	Reason        string `json:"reason"`
+	Description   string `json:"description"`
+}
+
+// UpdateReportRequest represents a moderator's decision on a report
+type UpdateReportRequest struct {
+	Status string `json:"status"`
+}
+
+// CreateAlertRequest represents a request to subscribe to nearby posts
+type CreateAlertRequest struct {
+	Email        string   `json:"email"`
+	Latitude     float64  `json:"latitude"`
+	Longitude    float64  `json:"longitude"`
+	RadiusMeters int      `json:"radius_meters"`
+	Categories   []string `json:"categories"`
+	Keywords     []string `json:"keywords"`
+}
+
+// ReportsResponse wraps a list of reports
+type ReportsResponse struct {
+	Reports []Report `json:"reports"`
+	Total   int      `json:"total"`
+}
+
+// AlertsResponse wraps a list of alerts
+type AlertsResponse struct {
+	Alerts []Alert `json:"alerts"`
+	Total  int     `json:"total"`
+}

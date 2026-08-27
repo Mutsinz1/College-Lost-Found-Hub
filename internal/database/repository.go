@@ -942,3 +942,135 @@ func (r *Repository) GetDefaultUserID(ctx context.Context) (uuid.UUID, error) {
 	}
 	return id, nil
 }
+
+// Report operations
+
+// CreateReport files an abuse report against a post.
+func (r *Repository) CreateReport(ctx context.Context, postID uuid.UUID, req CreateReportRequest) (*Report, error) {
+	// Reject reports against posts that do not exist rather than storing a
+	// dangling row: post_id is nullable, so the FK alone would not catch it.
+	var exists bool
+	if err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM posts WHERE id = $1)`, postID).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("failed to check post: %w", err)
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	var report Report
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO reports (post_id, reporter_email, reason, description)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, post_id, COALESCE(reporter_email, ''), reason, COALESCE(description, ''), created_at, status`,
+		postID, req.ReporterEmail, req.Reason, req.Description).Scan(
+		&report.ID, &report.PostID, &report.ReporterEmail, &report.Reason,
+		&report.Description, &report.CreatedAt, &report.Status)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create report: %w", err)
+	}
+	return &report, nil
+}
+
+// GetReports lists reports, most recent first, optionally filtered by status.
+func (r *Repository) GetReports(ctx context.Context, status string) ([]Report, error) {
+	query := `
+		SELECT id, post_id, COALESCE(reporter_email, ''), reason, COALESCE(description, ''), created_at, status
+		FROM reports`
+	var args []interface{}
+	if status != "" {
+		query += ` WHERE status = $1`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC LIMIT 200`
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list reports: %w", err)
+	}
+	defer rows.Close()
+
+	reports := []Report{}
+	for rows.Next() {
+		var rep Report
+		if err := rows.Scan(&rep.ID, &rep.PostID, &rep.ReporterEmail, &rep.Reason,
+			&rep.Description, &rep.CreatedAt, &rep.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan report: %w", err)
+		}
+		reports = append(reports, rep)
+	}
+	return reports, rows.Err()
+}
+
+// UpdateReportStatus moves a report through the review workflow.
+func (r *Repository) UpdateReportStatus(ctx context.Context, id uuid.UUID, status string) error {
+	tag, err := r.db.GetPool().Exec(ctx, `UPDATE reports SET status = $2 WHERE id = $1`, id, status)
+	if err != nil {
+		return fmt.Errorf("failed to update report: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Alert operations
+
+// CreateAlert subscribes an email address to posts near a location.
+func (r *Repository) CreateAlert(ctx context.Context, req CreateAlertRequest) (*Alert, error) {
+	var alert Alert
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO alerts (email, location, radius_meters, categories, keywords)
+		VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography, $4, $5, $6)
+		RETURNING id, email, ST_Y(location::geometry), ST_X(location::geometry),
+		          radius_meters, COALESCE(categories, '{}')::text[], COALESCE(keywords, '{}'),
+		          is_active, created_at, last_triggered_at`,
+		req.Email, req.Longitude, req.Latitude, req.RadiusMeters, req.Categories, req.Keywords).Scan(
+		&alert.ID, &alert.Email, &alert.Location.Latitude, &alert.Location.Longitude,
+		&alert.RadiusMeters, &alert.Categories, &alert.Keywords,
+		&alert.IsActive, &alert.CreatedAt, &alert.LastTriggeredAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create alert: %w", err)
+	}
+	return &alert, nil
+}
+
+// GetAlertsByEmail lists the active alerts belonging to an email address.
+func (r *Repository) GetAlertsByEmail(ctx context.Context, email string) ([]Alert, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, email, ST_Y(location::geometry), ST_X(location::geometry),
+		       radius_meters, COALESCE(categories, '{}')::text[], COALESCE(keywords, '{}'),
+		       is_active, created_at, last_triggered_at
+		FROM alerts
+		WHERE email = $1 AND is_active = true
+		ORDER BY created_at DESC`, email)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list alerts: %w", err)
+	}
+	defer rows.Close()
+
+	alerts := []Alert{}
+	for rows.Next() {
+		var a Alert
+		if err := rows.Scan(&a.ID, &a.Email, &a.Location.Latitude, &a.Location.Longitude,
+			&a.RadiusMeters, &a.Categories, &a.Keywords,
+			&a.IsActive, &a.CreatedAt, &a.LastTriggeredAt); err != nil {
+			return nil, fmt.Errorf("failed to scan alert: %w", err)
+		}
+		alerts = append(alerts, a)
+	}
+	return alerts, rows.Err()
+}
+
+// DeactivateAlert unsubscribes an alert. The email must match the one that
+// created it, so knowing an alert ID alone is not enough to change it.
+func (r *Repository) DeactivateAlert(ctx context.Context, id uuid.UUID, email string) error {
+	tag, err := r.db.GetPool().Exec(ctx,
+		`UPDATE alerts SET is_active = false WHERE id = $1 AND email = $2 AND is_active = true`, id, email)
+	if err != nil {
+		return fmt.Errorf("failed to deactivate alert: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

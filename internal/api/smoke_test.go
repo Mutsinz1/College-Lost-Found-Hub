@@ -33,6 +33,8 @@ type memStore struct {
 	users        map[uuid.UUID]*database.User
 	posts        map[uuid.UUID]*database.Post
 	interactions map[uuid.UUID]*database.Interaction
+	reports      map[uuid.UUID]*database.Report
+	alerts       map[uuid.UUID]*database.Alert
 	adminID      uuid.UUID
 }
 
@@ -49,6 +51,8 @@ func newMemStore() *memStore {
 		users:        map[uuid.UUID]*database.User{admin.ID: admin},
 		posts:        map[uuid.UUID]*database.Post{},
 		interactions: map[uuid.UUID]*database.Interaction{},
+		reports:      make(map[uuid.UUID]*database.Report),
+		alerts:       make(map[uuid.UUID]*database.Alert),
 		adminID:      admin.ID,
 	}
 }
@@ -311,8 +315,18 @@ func newSmokeServer(t *testing.T) (*httptest.Server, *memStore, string) {
 			r.Post("/{id}/claim", handlers.ClaimPost)
 			r.Post("/{id}/interactions", handlers.CreateInteraction)
 			r.Get("/{id}/interactions", handlers.GetPostInteractions)
+			r.Post("/{id}/reports", handlers.CreateReport)
 		})
 		r.Put("/interactions/{id}", handlers.UpdateInteraction)
+		r.Route("/reports", func(r chi.Router) {
+			r.With(RequireAdmin).Get("/", handlers.GetReports)
+			r.With(RequireAdmin).Put("/{id}", handlers.UpdateReport)
+		})
+		r.Route("/alerts", func(r chi.Router) {
+			r.Post("/", handlers.CreateAlert)
+			r.Get("/", handlers.GetAlerts)
+			r.Delete("/{id}", handlers.DeleteAlert)
+		})
 	})
 
 	server := httptest.NewServer(r)
@@ -563,5 +577,262 @@ func decodeEnvelopeError(t *testing.T, resp *http.Response, wantStatus int) {
 	}
 	if env.Success {
 		t.Errorf("expected success=false for status %d", wantStatus)
+	}
+}
+
+// Reports and alerts: a real in-memory implementation, so the smoke tests
+// exercise the handlers end to end over HTTP rather than asserting on stubs.
+
+func (m *memStore) CreateReport(ctx context.Context, postID uuid.UUID, req database.CreateReportRequest) (*database.Report, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.posts[postID]; !ok {
+		return nil, database.ErrNotFound
+	}
+	rep := &database.Report{
+		ID:            uuid.New(),
+		PostID:        &postID,
+		ReporterEmail: req.ReporterEmail,
+		Reason:        req.Reason,
+		Description:   req.Description,
+		CreatedAt:     time.Now(),
+		Status:        "pending",
+	}
+	m.reports[rep.ID] = rep
+	return rep, nil
+}
+
+func (m *memStore) GetReports(ctx context.Context, status string) ([]database.Report, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []database.Report{}
+	for _, r := range m.reports {
+		if status == "" || r.Status == status {
+			out = append(out, *r)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) UpdateReportStatus(ctx context.Context, id uuid.UUID, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.reports[id]
+	if !ok {
+		return database.ErrNotFound
+	}
+	r.Status = status
+	return nil
+}
+
+func (m *memStore) CreateAlert(ctx context.Context, req database.CreateAlertRequest) (*database.Alert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a := &database.Alert{
+		ID:           uuid.New(),
+		Email:        req.Email,
+		Location:     database.Point{Latitude: req.Latitude, Longitude: req.Longitude},
+		RadiusMeters: req.RadiusMeters,
+		Categories:   req.Categories,
+		Keywords:     req.Keywords,
+		IsActive:     true,
+		CreatedAt:    time.Now(),
+	}
+	m.alerts[a.ID] = a
+	return a, nil
+}
+
+func (m *memStore) GetAlertsByEmail(ctx context.Context, email string) ([]database.Alert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []database.Alert{}
+	for _, a := range m.alerts {
+		if a.Email == email && a.IsActive {
+			out = append(out, *a)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) DeactivateAlert(ctx context.Context, id uuid.UUID, email string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.alerts[id]
+	if !ok || a.Email != email || !a.IsActive {
+		return database.ErrNotFound
+	}
+	a.IsActive = false
+	return nil
+}
+
+// TestReportingFlow covers filing a report as an anonymous visitor and
+// triaging it as a moderator, including the gate that keeps reports away from
+// ordinary users.
+func TestReportingFlow(t *testing.T) {
+	server, store, _ := newSmokeServer(t)
+	client := server.Client()
+
+	// A post to report.
+	postID := uuid.New()
+	store.mu.Lock()
+	store.posts[postID] = &database.Post{
+		ID: postID, Type: "found", Category: "item", Title: "Suspicious listing",
+		Status: "active", EditToken: "tok", PostedBy: store.adminID,
+	}
+	store.mu.Unlock()
+
+	// Anyone can file a report -- no sign-in required.
+	resp, err := client.Post(server.URL+"/api/posts/"+postID.String()+"/reports", "application/json",
+		strings.NewReader(`{"reason":"spam","description":"Posted 40 times","reporter_email":"witness@college.edu"}`))
+	if err != nil {
+		t.Fatalf("file report: %v", err)
+	}
+	env := decodeEnvelope(t, resp, http.StatusCreated)
+	var report database.Report
+	if err := json.Unmarshal(env.Data, &report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if report.Status != "pending" {
+		t.Errorf("status = %q, want pending", report.Status)
+	}
+
+	// An unknown reason is rejected.
+	resp, _ = client.Post(server.URL+"/api/posts/"+postID.String()+"/reports", "application/json",
+		strings.NewReader(`{"reason":"because"}`))
+	decodeEnvelopeError(t, resp, http.StatusBadRequest)
+
+	// Reporting a post that does not exist is a 404, not a dangling row.
+	resp, _ = client.Post(server.URL+"/api/posts/"+uuid.New().String()+"/reports", "application/json",
+		strings.NewReader(`{"reason":"spam"}`))
+	decodeEnvelopeError(t, resp, http.StatusNotFound)
+
+	// Reading reports is admin-only: anonymous and ordinary users are refused.
+	resp, _ = client.Get(server.URL + "/api/reports")
+	decodeEnvelopeError(t, resp, http.StatusForbidden)
+
+	resp, _ = client.Post(server.URL+"/api/auth/dev-login", "application/json",
+		strings.NewReader(`{"email":"student@college.edu"}`))
+	env = decodeEnvelope(t, resp, http.StatusOK)
+	var login struct {
+		Token string `json:"token"`
+	}
+	json.Unmarshal(env.Data, &login)
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/reports", nil)
+	req.Header.Set("Authorization", "Bearer "+login.Token)
+	resp, _ = client.Do(req)
+	decodeEnvelopeError(t, resp, http.StatusForbidden)
+
+	// Promote and sign in again: now the report is visible and can be resolved.
+	store.mu.Lock()
+	for _, u := range store.users {
+		if u.Email == "student@college.edu" {
+			u.Role = "admin"
+		}
+	}
+	store.mu.Unlock()
+
+	resp, _ = client.Post(server.URL+"/api/auth/dev-login", "application/json",
+		strings.NewReader(`{"email":"student@college.edu"}`))
+	env = decodeEnvelope(t, resp, http.StatusOK)
+	json.Unmarshal(env.Data, &login)
+
+	req, _ = http.NewRequest(http.MethodGet, server.URL+"/api/reports?status=pending", nil)
+	req.Header.Set("Authorization", "Bearer "+login.Token)
+	resp, _ = client.Do(req)
+	env = decodeEnvelope(t, resp, http.StatusOK)
+	var list database.ReportsResponse
+	json.Unmarshal(env.Data, &list)
+	if list.Total != 1 {
+		t.Fatalf("total = %d, want 1", list.Total)
+	}
+
+	req, _ = http.NewRequest(http.MethodPut, server.URL+"/api/reports/"+report.ID.String(),
+		strings.NewReader(`{"status":"resolved"}`))
+	req.Header.Set("Authorization", "Bearer "+login.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = client.Do(req)
+	decodeEnvelope(t, resp, http.StatusOK)
+
+	store.mu.Lock()
+	got := store.reports[report.ID].Status
+	store.mu.Unlock()
+	if got != "resolved" {
+		t.Errorf("stored status = %q, want resolved", got)
+	}
+}
+
+// TestAlertSubscriptionFlow covers subscribing to nearby posts, listing your
+// own subscriptions, and unsubscribing -- including that an alert ID alone is
+// not enough to cancel someone else's subscription.
+func TestAlertSubscriptionFlow(t *testing.T) {
+	server, _, _ := newSmokeServer(t)
+	client := server.Client()
+
+	resp, err := client.Post(server.URL+"/api/alerts", "application/json",
+		strings.NewReader(`{"email":"Watcher@College.edu","latitude":40.73,"longitude":-73.93,"radius_meters":2000,"categories":["item","document"]}`))
+	if err != nil {
+		t.Fatalf("create alert: %v", err)
+	}
+	env := decodeEnvelope(t, resp, http.StatusCreated)
+	var alert database.Alert
+	json.Unmarshal(env.Data, &alert)
+	if alert.Email != "watcher@college.edu" {
+		t.Errorf("email = %q, want it normalised to lowercase", alert.Email)
+	}
+	if !alert.IsActive {
+		t.Error("a new alert should be active")
+	}
+
+	// Validation.
+	for _, body := range []string{
+		`{"email":"nope","latitude":40.73,"longitude":-73.93}`,
+		`{"email":"a@b.com","latitude":91,"longitude":-73.93}`,
+		`{"email":"a@b.com","latitude":40.73,"longitude":-73.93,"radius_meters":999999}`,
+		`{"email":"a@b.com","latitude":40.73,"longitude":-73.93,"categories":["nonsense"]}`,
+	} {
+		resp, _ = client.Post(server.URL+"/api/alerts", "application/json", strings.NewReader(body))
+		decodeEnvelopeError(t, resp, http.StatusBadRequest)
+	}
+
+	// Listing requires an email and returns only that address's alerts.
+	resp, _ = client.Get(server.URL + "/api/alerts")
+	decodeEnvelopeError(t, resp, http.StatusBadRequest)
+
+	resp, _ = client.Get(server.URL + "/api/alerts?email=watcher@college.edu")
+	env = decodeEnvelope(t, resp, http.StatusOK)
+	var list database.AlertsResponse
+	json.Unmarshal(env.Data, &list)
+	if list.Total != 1 {
+		t.Fatalf("total = %d, want 1", list.Total)
+	}
+
+	resp, _ = client.Get(server.URL + "/api/alerts?email=someone.else@college.edu")
+	env = decodeEnvelope(t, resp, http.StatusOK)
+	json.Unmarshal(env.Data, &list)
+	if list.Total != 0 {
+		t.Errorf("total = %d, want 0 for a different address", list.Total)
+	}
+
+	// Someone else's email cannot cancel this alert.
+	req, _ := http.NewRequest(http.MethodDelete,
+		server.URL+"/api/alerts/"+alert.ID.String()+"?email=attacker@college.edu", nil)
+	resp, _ = client.Do(req)
+	decodeEnvelopeError(t, resp, http.StatusNotFound)
+
+	// The owner can.
+	req, _ = http.NewRequest(http.MethodDelete,
+		server.URL+"/api/alerts/"+alert.ID.String()+"?email=watcher@college.edu", nil)
+	resp, _ = client.Do(req)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, _ = client.Get(server.URL + "/api/alerts?email=watcher@college.edu")
+	env = decodeEnvelope(t, resp, http.StatusOK)
+	json.Unmarshal(env.Data, &list)
+	if list.Total != 0 {
+		t.Errorf("total = %d, want 0 after unsubscribing", list.Total)
 	}
 }

@@ -107,10 +107,26 @@ func main() {
 			r.Post("/{id}/claim", handlers.ClaimPost)
 			r.Post("/{id}/interactions", handlers.CreateInteraction)
 			r.Get("/{id}/interactions", handlers.GetPostInteractions)
+			r.Post("/{id}/reports", handlers.CreateReport)
 		})
 
 		// Interaction routes
 		r.Put("/interactions/{id}", handlers.UpdateInteraction)
+
+		// Moderation. Reports name other people's posts and carry the
+		// reporter's address, so reading and triaging them is admin-only;
+		// filing one is not (see /posts/{id}/reports above).
+		r.Route("/reports", func(r chi.Router) {
+			r.With(api.RequireAdmin).Get("/", handlers.GetReports)
+			r.With(api.RequireAdmin).Put("/{id}", handlers.UpdateReport)
+		})
+
+		// Saved-search alerts
+		r.Route("/alerts", func(r chi.Router) {
+			r.Post("/", handlers.CreateAlert)
+			r.Get("/", handlers.GetAlerts)
+			r.Delete("/{id}", handlers.DeleteAlert)
+		})
 	})
 
 	// Serve static files (uploads)
