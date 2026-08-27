@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
-import { MapPin, Search, Filter, Building, Map } from 'lucide-react';
+import { MapPin, Filter, Building } from 'lucide-react';
 import { postsAPI, buildingsAPI, areasAPI } from '../services/api';
 
 const Home = () => {
@@ -117,12 +117,6 @@ const Home = () => {
     return icons[category] || '❓';
   };
 
-  const getMarkerColor = (type, isLostItem) => {
-    if (isLostItem) {
-      return type === 'lost' ? '#ef4444' : '#10b981'; // Red for lost, green for found
-    }
-    return type === 'lost' ? '#f97316' : '#3b82f6'; // Orange for lost, blue for found
-  };
 
   if (!userLocation) {
     return (
