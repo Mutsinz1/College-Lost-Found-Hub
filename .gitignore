@@ -72,7 +72,7 @@ ehthumbs.db
 Thumbs.db
 
 # Docker
-.dockerignore
+# .dockerignore is build configuration and is tracked; see Dockerfile
 
 # Temporary files
 tmp/

@@ -79,6 +79,17 @@ A modern web application for managing lost and found items within college campus
    go run cmd/migrate/main.go
    ```
 
+   Migrations create the schema only. To load demo buildings, areas and posts
+   for local development, add `-seed`:
+
+   ```bash
+   go run cmd/migrate/main.go -seed
+   ```
+
+   The seed data includes an account with the `admin` role and posts with
+   well-known edit tokens, so `-seed` refuses to run unless
+   `ENVIRONMENT=development`.
+
 5. **Start the backend server**:
    ```bash
    go run cmd/server/main.go
@@ -249,10 +260,21 @@ docker-compose down
 ## 🚀 Deployment
 
 ### Docker Deployment
+
+`docker-compose.prod.yml` builds the API (`Dockerfile`) and the frontend
+(`frontend/Dockerfile`), runs migrations once, and puts nginx
+(`nginx.prod.conf`) in front to serve the built SPA and proxy `/api` and
+`/uploads` to the API.
+
 ```bash
-# Build and run with Docker Compose
-docker-compose -f docker-compose.prod.yml up -d
+cp env.example .env      # then set real values
+docker compose -f docker-compose.prod.yml up -d --build
 ```
+
+`POSTGRES_PASSWORD`, `JWT_SECRET` and `GOOGLE_CLIENT_ID` are required: compose
+refuses to start without them, and the API itself refuses to boot outside
+development if `JWT_SECRET` is still the placeholder or `GOOGLE_CLIENT_ID` is
+unset. Set `HTTP_PORT` to publish on something other than port 80.
 
 ### Manual Deployment
 1. Build the frontend: `cd frontend && npm run build`

@@ -70,3 +70,51 @@ func TestLoadEnvOverrides(t *testing.T) {
 		t.Errorf("AllowedEmailDomain = %q, want college.edu", cfg.Auth.AllowedEmailDomain)
 	}
 }
+
+func TestValidateRejectsUnsafeProductionConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{
+			name:    "development tolerates the placeholder secret",
+			env:     map[string]string{"ENVIRONMENT": "development"},
+			wantErr: false,
+		},
+		{
+			name:    "production rejects the placeholder secret",
+			env:     map[string]string{"ENVIRONMENT": "production", "GOOGLE_CLIENT_ID": "cid"},
+			wantErr: true,
+		},
+		{
+			name:    "production rejects a missing Google client id",
+			env:     map[string]string{"ENVIRONMENT": "production", "JWT_SECRET": "a-real-secret"},
+			wantErr: true,
+		},
+		{
+			name:    "production accepts a complete config",
+			env:     map[string]string{"ENVIRONMENT": "production", "JWT_SECRET": "a-real-secret", "GOOGLE_CLIENT_ID": "cid"},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range []string{"ENVIRONMENT", "JWT_SECRET", "GOOGLE_CLIENT_ID"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			_, err := Load()
+			if tc.wantErr && err == nil {
+				t.Error("Load() succeeded, want an error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Load() failed: %v", err)
+			}
+		})
+	}
+}

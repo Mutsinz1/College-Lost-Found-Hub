@@ -1,0 +1,78 @@
+# Production-ish stack: Postgres, the Go API, and nginx serving the built
+# frontend and proxying /api to the backend.
+#
+# Copy env.example to .env and set real values first. The API refuses to start
+# outside development unless JWT_SECRET and GOOGLE_CLIENT_ID are set.
+
+services:
+  postgres:
+    image: postgis/postgis:15-3.3
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lostfound}
+      POSTGRES_USER: ${POSTGRES_USER:-lostfound_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP check. Without it pg_isready succeeds over the
+      # unix socket while initdb's temporary server is still running, and
+      # dependent services start against a port that is not listening yet.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-lostfound_user} -d ${POSTGRES_DB:-lostfound}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # Runs migrations once, then exits. The API waits for it to finish.
+  migrate:
+    build: .
+    command: migrate
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-lostfound_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lostfound}?sslmode=disable
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-lostfound_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lostfound}?sslmode=disable
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      PORT: 8080
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID in .env}
+      ALLOWED_EMAIL_DOMAIN: ${ALLOWED_EMAIL_DOMAIN:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-/api}
+        REACT_APP_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - uploads:/var/www/uploads:ro
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  uploads:

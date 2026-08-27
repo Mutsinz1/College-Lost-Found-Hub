@@ -72,7 +72,7 @@ func Load() (*Config, error) {
 			URL: getEnv("DATABASE_URL", "postgres://lostfound_user:lostfound_password@localhost:5432/lostfound?sslmode=disable"),
 		},
 		JWT: JWTConfig{
-			Secret:     getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
+			Secret:     getEnv("JWT_SECRET", defaultJWTSecret),
 			Expiration: getEnvAsDuration("JWT_EXPIRATION", 24*time.Hour),
 		},
 		Auth: AuthConfig{
@@ -95,7 +95,37 @@ func Load() (*Config, error) {
 		},
 	}
 
+	if err := config.validate(); err != nil {
+		return nil, err
+	}
+
 	return config, nil
+}
+
+// defaultJWTSecret is the placeholder used for local development. Sessions
+// signed with a value everybody can read are not sessions, so it is rejected
+// outside development.
+const defaultJWTSecret = "your-secret-key-change-in-production"
+
+// validate rejects configurations that are fine locally but unsafe once
+// ENVIRONMENT is anything other than development. Failing at startup is the
+// point: a misconfigured deployment should not boot and quietly serve traffic.
+func (c *Config) validate() error {
+	if c.Server.Environment == "development" {
+		return nil
+	}
+
+	var problems []string
+	if c.JWT.Secret == defaultJWTSecret || c.JWT.Secret == "" {
+		problems = append(problems, "JWT_SECRET is unset or still the development placeholder")
+	}
+	if c.Auth.GoogleClientID == "" {
+		problems = append(problems, "GOOGLE_CLIENT_ID is unset, so Google Sign-In cannot verify tokens")
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("invalid configuration for ENVIRONMENT=%q: %s", c.Server.Environment, strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 func getEnv(key, defaultValue string) string {
