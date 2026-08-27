@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"lostfound/internal/config"
-	"lostfound/internal/database"
 )
 
 func main() {
@@ -20,24 +20,31 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Initialize database connection
-	db, err := database.NewConnection(cfg)
+	ctx := context.Background()
+
+	// Use the simple query protocol so a migration file can contain multiple
+	// statements, functions and triggers (dollar-quoted bodies included).
+	connCfg, err := pgx.ParseConfig(cfg.Database.URL)
+	if err != nil {
+		log.Fatalf("Failed to parse database URL: %v", err)
+	}
+	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+
+	conn, err := pgx.ConnectConfig(ctx, connCfg)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer db.Close()
+	defer conn.Close(ctx)
 
 	// Run migrations
-	if err := runMigrations(db); err != nil {
+	if err := runMigrations(ctx, conn); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
 	log.Println("Migrations completed successfully")
 }
 
-func runMigrations(db *database.DB) error {
-	ctx := context.Background()
-
+func runMigrations(ctx context.Context, conn *pgx.Conn) error {
 	// Create migrations table if it doesn't exist
 	createMigrationsTable := `
 		CREATE TABLE IF NOT EXISTS migrations (
@@ -46,7 +53,7 @@ func runMigrations(db *database.DB) error {
 			applied_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 		)`
 
-	if err := db.Exec(ctx, createMigrationsTable); err != nil {
+	if _, err := conn.Exec(ctx, createMigrationsTable); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
 	}
 
@@ -67,37 +74,36 @@ func runMigrations(db *database.DB) error {
 	sort.Strings(migrationFiles)
 
 	// Get applied migrations
-	appliedMigrations, err := getAppliedMigrations(ctx, db)
+	appliedMigrations, err := getAppliedMigrations(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("failed to get applied migrations: %w", err)
 	}
 
 	// Run pending migrations
 	for _, filename := range migrationFiles {
-		if !appliedMigrations[filename] {
-			log.Printf("Running migration: %s", filename)
-			
-			if err := runMigration(ctx, db, filename); err != nil {
-				return fmt.Errorf("failed to run migration %s: %w", filename, err)
-			}
-
-			// Record migration as applied
-			if err := recordMigration(ctx, db, filename); err != nil {
-				return fmt.Errorf("failed to record migration %s: %w", filename, err)
-			}
-
-			log.Printf("Migration %s completed", filename)
-		} else {
+		if appliedMigrations[filename] {
 			log.Printf("Migration %s already applied, skipping", filename)
+			continue
 		}
+
+		log.Printf("Running migration: %s", filename)
+
+		if err := runMigration(ctx, conn, filename); err != nil {
+			return fmt.Errorf("failed to run migration %s: %w", filename, err)
+		}
+
+		if err := recordMigration(ctx, conn, filename); err != nil {
+			return fmt.Errorf("failed to record migration %s: %w", filename, err)
+		}
+
+		log.Printf("Migration %s completed", filename)
 	}
 
 	return nil
 }
 
-func getAppliedMigrations(ctx context.Context, db *database.DB) (map[string]bool, error) {
-	query := `SELECT filename FROM migrations ORDER BY applied_at`
-	rows, err := db.Query(ctx, query)
+func getAppliedMigrations(ctx context.Context, conn *pgx.Conn) (map[string]bool, error) {
+	rows, err := conn.Query(ctx, `SELECT filename FROM migrations ORDER BY applied_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -112,39 +118,32 @@ func getAppliedMigrations(ctx context.Context, db *database.DB) (map[string]bool
 		applied[filename] = true
 	}
 
-	return applied, nil
+	return applied, rows.Err()
 }
 
-func runMigration(ctx context.Context, db *database.DB, filename string) error {
-	filepath := filepath.Join("migrations", filename)
-	content, err := os.ReadFile(filepath)
+// runMigration executes a migration file in a single transaction. The whole
+// file is sent as one script: no splitting on semicolons, so functions and
+// triggers with dollar-quoted bodies work correctly.
+func runMigration(ctx context.Context, conn *pgx.Conn, filename string) error {
+	content, err := os.ReadFile(filepath.Join("migrations", filename))
 	if err != nil {
 		return fmt.Errorf("failed to read migration file: %w", err)
 	}
 
-	// Split content by semicolon to handle multiple statements
-	statements := strings.Split(string(content), ";")
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
 
-	for _, statement := range statements {
-		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
-		}
-
-		// Skip comments
-		if strings.HasPrefix(statement, "--") {
-			continue
-		}
-
-		if err := db.Exec(ctx, statement); err != nil {
-			return fmt.Errorf("failed to execute statement: %w", err)
-		}
+	if _, err := tx.Exec(ctx, string(content)); err != nil {
+		return fmt.Errorf("failed to execute migration: %w", err)
 	}
 
-	return nil
+	return tx.Commit(ctx)
 }
 
-func recordMigration(ctx context.Context, db *database.DB, filename string) error {
-	query := `INSERT INTO migrations (filename) VALUES ($1)`
-	return db.Exec(ctx, query, filename)
-} 
+func recordMigration(ctx context.Context, conn *pgx.Conn, filename string) error {
+	_, err := conn.Exec(ctx, `INSERT INTO migrations (filename) VALUES ($1)`, filename)
+	return err
+}

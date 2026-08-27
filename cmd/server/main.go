@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,6 +41,7 @@ func main() {
 
 	// Initialize handlers
 	handlers := api.NewHandler(repo, imgProcessor)
+	authHandlers := api.NewAuthHandler(repo, cfg)
 
 	// Create router
 	r := chi.NewRouter()
@@ -51,11 +53,11 @@ func main() {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Timeout(60 * time.Second))
 
-	// CORS configuration
+	// CORS configuration (origins come from ALLOWED_ORIGINS env var)
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost:3001", "http://localhost:65063"},
+		AllowedOrigins:   cfg.Server.AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Edit-Token"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -63,23 +65,35 @@ func main() {
 
 	// API routes
 	r.Route("/api", func(r chi.Router) {
+		// Parse session tokens (when present) for all API routes
+		r.Use(api.Middleware(cfg.JWT.Secret))
+
+		// Auth routes
+		r.Route("/auth", func(r chi.Router) {
+			r.Post("/google", authHandlers.GoogleLogin)
+			if cfg.Server.Environment == "development" {
+				// Dev-only login that replaces the old unauthenticated
+				// /users/sso endpoint (which trusted client-sent identities)
+				r.Post("/dev-login", authHandlers.DevLogin)
+			}
+		})
+
 		// Building routes
 		r.Route("/buildings", func(r chi.Router) {
 			r.Get("/", handlers.GetBuildings)
 			r.Get("/{id}", handlers.GetBuildingByID)
-			r.Post("/", handlers.CreateBuilding) // Admin only
+			r.With(api.RequireAdmin).Post("/", handlers.CreateBuilding)
 		})
 
 		// Lost & Found Area routes
 		r.Route("/areas", func(r chi.Router) {
 			r.Get("/", handlers.GetLostFoundAreas)
 			r.Get("/building/{buildingId}", handlers.GetLostFoundAreasByBuilding)
-			r.Post("/", handlers.CreateLostFoundArea) // Admin only
+			r.With(api.RequireAdmin).Post("/", handlers.CreateLostFoundArea)
 		})
 
 		// User routes
 		r.Route("/users", func(r chi.Router) {
-			r.Post("/sso", handlers.GetOrCreateUser)
 			r.Get("/{id}", handlers.GetUserByID)
 		})
 
@@ -91,7 +105,12 @@ func main() {
 			r.Put("/{id}", handlers.UpdatePost)
 			r.Delete("/{id}", handlers.DeletePost)
 			r.Post("/{id}/claim", handlers.ClaimPost)
+			r.Post("/{id}/interactions", handlers.CreateInteraction)
+			r.Get("/{id}/interactions", handlers.GetPostInteractions)
 		})
+
+		// Interaction routes
+		r.Put("/interactions/{id}", handlers.UpdateInteraction)
 	})
 
 	// Serve static files (uploads)
@@ -111,6 +130,45 @@ func main() {
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+
+	// Periodically clean up expired posts and their image files
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	defer cleanupCancel()
+	go func() {
+		runCleanup := func() {
+			ctx, cancel := context.WithTimeout(cleanupCtx, 2*time.Minute)
+			defer cancel()
+			count, imageURLs, err := repo.CleanupExpiredPosts(ctx)
+			if err != nil {
+				log.Printf("expired-post cleanup failed: %v", err)
+				return
+			}
+			for _, url := range imageURLs {
+				filename := strings.TrimPrefix(strings.TrimPrefix(url, "/uploads/"), "uploads/")
+				if filename == "" {
+					continue
+				}
+				if err := imgProcessor.DeleteImage(filename); err != nil {
+					log.Printf("failed to delete image %s: %v", filename, err)
+				}
+			}
+			if count > 0 {
+				log.Printf("cleaned up %d expired posts", count)
+			}
+		}
+
+		runCleanup() // run once at startup
+		ticker := time.NewTicker(12 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cleanupCtx.Done():
+				return
+			case <-ticker.C:
+				runCleanup()
+			}
+		}
+	}()
 
 	// Start server in a goroutine
 	go func() {

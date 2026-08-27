@@ -63,7 +63,7 @@ type Post struct {
 	Status           string    `json:"status"`
 	ContactEmail     *string   `json:"contact_email"`
 	PosterName       *string   `json:"poster_name"`
-	EditToken        string    `json:"edit_token"`
+	EditToken        string    `json:"edit_token,omitempty"`
 	ImageURLs        []string  `json:"image_urls"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -158,6 +158,19 @@ type SearchPostsRequest struct {
 // ClaimPostRequest represents a request to claim a post
 type ClaimPostRequest struct {
 	PostID uuid.UUID `json:"post_id"`
+}
+
+// CreateInteractionRequest represents a request to create an interaction on a post
+type CreateInteractionRequest struct {
+	InteractionType string `json:"interaction_type"` // 'claim', 'help', 'report'
+	ContactEmail    string `json:"contact_email"`
+	ContactName     string `json:"contact_name"`
+	Message         string `json:"message"`
+}
+
+// InteractionsResponse represents the response for a post's interactions
+type InteractionsResponse struct {
+	Interactions []Interaction `json:"interactions"`
 }
 
 // CreateBuildingRequest represents a request to create a building

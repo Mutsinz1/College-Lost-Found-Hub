@@ -56,7 +56,7 @@ const CreatePost = () => {
   const handleImageUpload = (e) => {
     const files = Array.from(e.target.files);
     const validFiles = files.filter(file => {
-      const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+      const validTypes = ['image/jpeg', 'image/png', 'image/gif'];
       const maxSize = 10 * 1024 * 1024; // 10MB
       
       if (!validTypes.includes(file.type)) {
@@ -121,9 +121,9 @@ const CreatePost = () => {
       const response = await postsAPI.create(submitData);
       
       if (response.success) {
-        // Save edit token for future editing
+        // Save edit token for future editing (keyed by post ID)
         if (response.data.edit_token) {
-          saveEditToken(response.data.edit_token);
+          saveEditToken(response.data.id, response.data.edit_token);
         }
         
         toast.success('Post created successfully!');

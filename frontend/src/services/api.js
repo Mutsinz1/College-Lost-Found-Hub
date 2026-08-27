@@ -57,11 +57,17 @@ export const areasAPI = {
 
 // User API
 export const usersAPI = {
-  // Get or create user via SSO
-  getOrCreate: (ssoUser) => api.post('/users/sso', ssoUser),
-  
   // Get user by ID
   getById: (id) => api.get(`/users/${id}`),
+};
+
+// Auth API
+export const authAPI = {
+  // Sign in with a Google ID token (from Google Identity Services)
+  googleLogin: (credential) => api.post('/auth/google', { credential }),
+
+  // Development-only login (backend mounts this only when ENVIRONMENT=development)
+  devLogin: (email, name) => api.post('/auth/dev-login', { email, name }),
 };
 
 // Posts API
@@ -94,14 +100,34 @@ export const postsAPI = {
     },
   }),
   
-  // Update post
-  update: (id, postData) => api.put(`/posts/${id}`, postData),
-  
-  // Delete post
-  delete: (id) => api.delete(`/posts/${id}`),
+  // Update post (requires the post's edit token)
+  update: (id, postData, editToken) => api.put(`/posts/${id}`, postData, {
+    headers: { 'X-Edit-Token': editToken || getEditToken(id) || '' },
+  }),
+
+  // Delete post (requires the post's edit token)
+  delete: (id, editToken) => api.delete(`/posts/${id}`, {
+    headers: { 'X-Edit-Token': editToken || getEditToken(id) || '' },
+  }),
   
   // Claim post
   claim: (id) => api.post(`/posts/${id}/claim`),
+};
+
+// Interactions API (claims / help offers on a post)
+export const interactionsAPI = {
+  // Anyone can submit a claim/help interaction with their contact info
+  create: (postId, data) => api.post(`/posts/${postId}/interactions`, data),
+
+  // Only the poster (edit token holder) can list interactions on their post
+  listForPost: (postId, editToken) => api.get(`/posts/${postId}/interactions`, {
+    headers: { 'X-Edit-Token': editToken || getEditToken(postId) || '' },
+  }),
+
+  // Only the poster can accept/reject an interaction
+  updateStatus: (interactionId, status, postId, editToken) => api.put(`/interactions/${interactionId}`, { status }, {
+    headers: { 'X-Edit-Token': editToken || getEditToken(postId) || '' },
+  }),
 };
 
 // Auth utilities
@@ -117,32 +143,54 @@ export const removeAuthToken = () => {
   localStorage.removeItem('auth_token');
 };
 
-export const saveEditToken = (token) => {
-  localStorage.setItem('edit_token', token);
-};
+// Edit tokens are stored per post so users can manage every post they created
+const EDIT_TOKENS_KEY = 'edit_tokens';
 
-export const getEditToken = () => {
-  return localStorage.getItem('edit_token');
-};
-
-export const removeEditToken = () => {
-  localStorage.removeItem('edit_token');
-};
-
-// SSO utilities
-export const handleSSOLogin = async (ssoUser) => {
+const readEditTokens = () => {
   try {
-    const response = await usersAPI.getOrCreate(ssoUser);
-    if (response.success) {
-      // Save user info to localStorage
-      localStorage.setItem('user', JSON.stringify(response.data.user));
-      return response.data.user;
-    }
-    throw new Error(response.error || 'Failed to authenticate');
-  } catch (error) {
-    console.error('SSO login error:', error);
-    throw error;
+    return JSON.parse(localStorage.getItem(EDIT_TOKENS_KEY)) || {};
+  } catch {
+    return {};
   }
+};
+
+export const saveEditToken = (postId, token) => {
+  const tokens = readEditTokens();
+  tokens[postId] = token;
+  localStorage.setItem(EDIT_TOKENS_KEY, JSON.stringify(tokens));
+};
+
+export const getEditToken = (postId) => {
+  return readEditTokens()[postId] || null;
+};
+
+export const removeEditToken = (postId) => {
+  const tokens = readEditTokens();
+  delete tokens[postId];
+  localStorage.setItem(EDIT_TOKENS_KEY, JSON.stringify(tokens));
+};
+
+// Sign-in helpers: store the session token + user returned by the backend
+const storeSession = (data) => {
+  saveAuthToken(data.token);
+  localStorage.setItem('user', JSON.stringify(data.user));
+  return data.user;
+};
+
+export const loginWithGoogle = async (credential) => {
+  const response = await authAPI.googleLogin(credential);
+  if (response.success) {
+    return storeSession(response.data);
+  }
+  throw new Error(response.error || 'Failed to sign in');
+};
+
+export const loginDev = async (email, name) => {
+  const response = await authAPI.devLogin(email, name);
+  if (response.success) {
+    return storeSession(response.data);
+  }
+  throw new Error(response.error || 'Failed to sign in');
 };
 
 export const getCurrentUser = () => {
@@ -161,18 +209,8 @@ export const getCurrentUser = () => {
 export const logout = () => {
   localStorage.removeItem('user');
   localStorage.removeItem('auth_token');
-  localStorage.removeItem('edit_token');
-};
-
-// Mock SSO for development (replace with actual SSO integration)
-export const mockSSOLogin = async () => {
-  const mockUser = {
-    sso_id: 'mock_sso_123',
-    email: 'student@college.edu',
-    name: 'John Student',
-  };
-  
-  return await handleSSOLogin(mockUser);
+  // Edit tokens are intentionally kept: they prove ownership of posts
+  // independently of login state.
 };
 
 export default api; 
