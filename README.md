@@ -214,6 +214,12 @@ JWT_SECRET=change-me-in-production
 GOOGLE_CLIENT_ID=            # OAuth client ID for Google Sign-In (optional in dev)
 ALLOWED_EMAIL_DOMAIN=        # e.g. college.edu to restrict sign-in to your school
 
+# Rate limits (per client IP per hour; 0 disables)
+RATE_LIMIT_POSTS_PER_HOUR=20
+RATE_LIMIT_REPORTS_PER_HOUR=30
+RATE_LIMIT_ALERTS_PER_HOUR=10
+RATE_LIMIT_LOGINS_PER_HOUR=60
+
 # File Storage
 UPLOAD_DIR=./uploads
 MAX_FILE_SIZE=10485760  # 10MB
@@ -224,6 +230,22 @@ For Google Sign-In on the frontend, also create `frontend/.env` with the same cl
 ```env
 REACT_APP_GOOGLE_CLIENT_ID=<your client id>.apps.googleusercontent.com
 ```
+
+### Rate limiting
+
+The endpoints that accept unauthenticated writes -- creating a post, filing a
+report, subscribing to alerts, and signing in -- are throttled per client IP.
+Reads are never throttled.
+
+Limits are deliberately generous: a campus network can put an entire building
+behind one address, and throttling real users is worse than the spam this
+prevents. Treat it as a speed bump against casual abuse, not a defence against
+a distributed attacker. Raise the values above, or set them to 0, if you run
+integration tests repeatedly against one server.
+
+Throttling keys off `X-Forwarded-For` via chi's RealIP middleware, which is
+correct behind the nginx in `docker-compose.prod.yml`. If you deploy the API
+with the header set by something untrusted, a client can spoof its own key.
 
 ## 🛠️ Development Commands
 

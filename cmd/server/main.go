@@ -70,6 +70,7 @@ func main() {
 
 		// Auth routes
 		r.Route("/auth", func(r chi.Router) {
+			r.Use(api.RateLimit(cfg.RateLimit.LoginsPerHour, time.Hour))
 			r.Post("/google", authHandlers.GoogleLogin)
 			if cfg.Server.Environment == "development" {
 				// Dev-only login that replaces the old unauthenticated
@@ -100,14 +101,14 @@ func main() {
 		// Post routes
 		r.Route("/posts", func(r chi.Router) {
 			r.Get("/", handlers.SearchPosts)
-			r.Post("/", handlers.CreatePost)
+			r.With(api.RateLimit(cfg.RateLimit.PostsPerHour, time.Hour)).Post("/", handlers.CreatePost)
 			r.Get("/{id}", handlers.GetPostByID)
 			r.Put("/{id}", handlers.UpdatePost)
 			r.Delete("/{id}", handlers.DeletePost)
 			r.Post("/{id}/claim", handlers.ClaimPost)
 			r.Post("/{id}/interactions", handlers.CreateInteraction)
 			r.Get("/{id}/interactions", handlers.GetPostInteractions)
-			r.Post("/{id}/reports", handlers.CreateReport)
+			r.With(api.RateLimit(cfg.RateLimit.ReportsPerHour, time.Hour)).Post("/{id}/reports", handlers.CreateReport)
 		})
 
 		// Interaction routes
@@ -123,7 +124,7 @@ func main() {
 
 		// Saved-search alerts
 		r.Route("/alerts", func(r chi.Router) {
-			r.Post("/", handlers.CreateAlert)
+			r.With(api.RateLimit(cfg.RateLimit.AlertsPerHour, time.Hour)).Post("/", handlers.CreateAlert)
 			r.Get("/", handlers.GetAlerts)
 			r.Delete("/{id}", handlers.DeleteAlert)
 		})

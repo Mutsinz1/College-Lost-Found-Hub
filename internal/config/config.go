@@ -11,12 +11,13 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	JWT      JWTConfig
-	Auth     AuthConfig
-	Upload   UploadConfig
-	Email    EmailConfig
+	Server    ServerConfig
+	Database  DatabaseConfig
+	JWT       JWTConfig
+	Auth      AuthConfig
+	Upload    UploadConfig
+	Email     EmailConfig
+	RateLimit RateLimitConfig
 }
 
 type ServerConfig struct {
@@ -44,6 +45,15 @@ type UploadConfig struct {
 	Dir          string
 	MaxSize      int64
 	AllowedTypes []string
+}
+
+// RateLimitConfig caps the endpoints that accept unauthenticated writes.
+// Counts are per client IP per hour; zero disables that limit.
+type RateLimitConfig struct {
+	PostsPerHour   int
+	ReportsPerHour int
+	AlertsPerHour  int
+	LoginsPerHour  int
 }
 
 type EmailConfig struct {
@@ -85,6 +95,14 @@ func Load() (*Config, error) {
 			// .webp removed: the imaging library cannot decode/encode it,
 			// so webp uploads previously failed with a 500 at thumbnail time
 			AllowedTypes: []string{".jpg", ".jpeg", ".png", ".gif"},
+		},
+		RateLimit: RateLimitConfig{
+			// Deliberately generous. A shared campus address should never hit
+			// these in normal use; they exist to stop scripted floods.
+			PostsPerHour:   getEnvAsInt("RATE_LIMIT_POSTS_PER_HOUR", 20),
+			ReportsPerHour: getEnvAsInt("RATE_LIMIT_REPORTS_PER_HOUR", 30),
+			AlertsPerHour:  getEnvAsInt("RATE_LIMIT_ALERTS_PER_HOUR", 10),
+			LoginsPerHour:  getEnvAsInt("RATE_LIMIT_LOGINS_PER_HOUR", 60),
 		},
 		Email: EmailConfig{
 			Host:     getEnv("SMTP_HOST", ""),
