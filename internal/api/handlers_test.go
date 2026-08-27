@@ -349,6 +349,55 @@ func TestSearchPostsParsesParams(t *testing.T) {
 	}
 }
 
+func TestSearchPostsRejectsInvalidEnums(t *testing.T) {
+	// These params map to Postgres enum columns. Unknown values must be
+	// rejected with 400 before reaching the database, which would otherwise
+	// fail the query and surface as a 500.
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"bad type", "/api/posts?lat=40.5&lng=-73.9&type=bogus"},
+		{"bad category", "/api/posts?lat=40.5&lng=-73.9&category=bogus"},
+		{"sql injection in category", "/api/posts?lat=40.5&lng=-73.9&category=%27+OR+1%3D1--"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			store := &mockStore{
+				searchPosts: func(ctx context.Context, req database.SearchPostsRequest) (*database.SearchPostsResponse, error) {
+					called = true
+					return &database.SearchPostsResponse{Posts: []database.Post{}}, nil
+				},
+			}
+			router := newTestRouter(t, store)
+
+			rec := doJSON(t, router, http.MethodGet, tc.query, nil, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+			if called {
+				t.Error("invalid filter reached the store; it should be rejected in the handler")
+			}
+		})
+	}
+}
+
+func TestSearchPostsAllowsEmptyEnums(t *testing.T) {
+	// Omitted filters are not the same as invalid ones.
+	store := &mockStore{
+		searchPosts: func(ctx context.Context, req database.SearchPostsRequest) (*database.SearchPostsResponse, error) {
+			return &database.SearchPostsResponse{Posts: []database.Post{}}, nil
+		},
+	}
+	router := newTestRouter(t, store)
+
+	rec := doJSON(t, router, http.MethodGet, "/api/posts?lat=40.5&lng=-73.9", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
 func TestCreateInteractionValidation(t *testing.T) {
 	store := &mockStore{
 		createInteraction: func(ctx context.Context, postID uuid.UUID, req database.CreateInteractionRequest) (*database.Interaction, error) {

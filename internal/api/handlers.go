@@ -25,6 +25,7 @@ const UserIDKey contextKey = "user_id"
 // maxImagesPerPost caps how many images can be attached to a single post
 const maxImagesPerPost = 5
 
+var validTypes = map[string]bool{"lost": true, "found": true}
 var validCategories = map[string]bool{"pet": true, "document": true, "item": true, "other": true}
 var validStatuses = map[string]bool{"active": true, "claimed": true, "resolved": true}
 var validInteractionTypes = map[string]bool{"claim": true, "help": true, "report": true}
@@ -288,7 +289,7 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate required fields against the schema's enums
-	if req.Type != "lost" && req.Type != "found" {
+	if !validTypes[req.Type] {
 		writeError(w, http.StatusBadRequest, "type must be 'lost' or 'found'", nil)
 		return
 	}
@@ -384,9 +385,18 @@ func (h *Handler) SearchPosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Filter parameters
+	// Filter parameters. These map to Postgres enum columns, so reject unknown
+	// values here rather than letting the driver fail with a 500.
 	req.Type = r.URL.Query().Get("type")
+	if req.Type != "" && !validTypes[req.Type] {
+		writeError(w, http.StatusBadRequest, "type must be 'lost' or 'found'", nil)
+		return
+	}
 	req.Category = r.URL.Query().Get("category")
+	if req.Category != "" && !validCategories[req.Category] {
+		writeError(w, http.StatusBadRequest, "category must be one of: pet, document, item, other", nil)
+		return
+	}
 
 	if buildingIDStr := r.URL.Query().Get("building_id"); buildingIDStr != "" {
 		if buildingID, err := uuid.Parse(buildingIDStr); err == nil {
