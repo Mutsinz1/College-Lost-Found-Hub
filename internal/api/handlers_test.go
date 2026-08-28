@@ -336,6 +336,30 @@ func TestSearchPostsParsesParams(t *testing.T) {
 	}
 }
 
+func TestListEndpointsReturnEmptyArraysNotNull(t *testing.T) {
+	// A nil Go slice marshals to JSON null, and the frontend calls .map() on
+	// these collections. Returning null blanked the entire page on any empty
+	// database, which is exactly what a fresh deployment has.
+	store := &mockStore{
+		getBuildings: func(ctx context.Context) ([]database.Building, error) { return nil, nil },
+		getAreas:     func(ctx context.Context) ([]database.LostFoundArea, error) { return nil, nil },
+	}
+	h := NewHandler(store, image.NewProcessor(t.TempDir(), 10*1024*1024, []string{".jpg", ".png"}))
+	r := chi.NewRouter()
+	r.Get("/api/buildings", h.GetBuildings)
+	r.Get("/api/areas", h.GetLostFoundAreas)
+
+	for _, path := range []string{"/api/buildings", "/api/areas"} {
+		rec := doJSON(t, r, http.MethodGet, path, nil, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", path, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "null") {
+			t.Errorf("%s returned null for an empty collection: %s", path, rec.Body.String())
+		}
+	}
+}
+
 func TestSearchPostsRejectsInvalidEnums(t *testing.T) {
 	// These params map to Postgres enum columns. Unknown values must be
 	// rejected with 400 before reaching the database, which would otherwise

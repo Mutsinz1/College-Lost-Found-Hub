@@ -51,11 +51,11 @@ const Home = () => {
         ]);
         
         if (buildingsResponse.success) {
-          setBuildings(buildingsResponse.data.buildings);
+          setBuildings(buildingsResponse.data.buildings || []);
         }
         
         if (areasResponse.success) {
-          setAreas(areasResponse.data.areas);
+          setAreas(areasResponse.data.areas || []);
         }
       } catch (error) {
         console.error('Failed to load buildings and areas:', error);
@@ -129,6 +129,10 @@ const Home = () => {
 
   // Ensure posts is always an array
   const safePosts = Array.isArray(posts) ? posts : [];
+  // A null from the API must never reach .map(): an uncaught TypeError here
+  // unmounts the whole tree and renders a blank page.
+  const safeBuildings = Array.isArray(buildings) ? buildings : [];
+  const safeAreas = Array.isArray(areas) ? areas : [];
 
   return (
     <div className="space-y-6">
@@ -212,7 +216,7 @@ const Home = () => {
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
             >
               <option value="">All Buildings</option>
-              {buildings.map((building) => (
+              {safeBuildings.map((building) => (
                 <option key={building.id} value={building.id}>
                   {building.name}
                 </option>
@@ -232,7 +236,7 @@ const Home = () => {
               disabled={!filters.building_id}
             >
               <option value="">All Areas</option>
-              {areas
+              {safeAreas
                 .filter((area) => !filters.building_id || area.building_id === filters.building_id)
                 .map((area) => (
                   <option key={area.id} value={area.id}>
@@ -296,7 +300,7 @@ const Home = () => {
             </Marker>
 
             {/* Building markers */}
-            {buildings.map((building) => (
+            {safeBuildings.map((building) => (
               <Marker
                 key={building.id}
                 position={[building.location.latitude, building.location.longitude]}

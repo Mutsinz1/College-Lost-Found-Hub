@@ -1,3 +1,18 @@
+# Frontend: compiled here so one image serves both the SPA and the API from a
+# single origin. REACT_APP_* are inlined at build time, so the API URL is
+# relative -- same origin, no CORS.
+FROM node:18-alpine AS web
+WORKDIR /web
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+ARG REACT_APP_API_URL=/api
+ARG REACT_APP_GOOGLE_CLIENT_ID=
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+ENV REACT_APP_GOOGLE_CLIENT_ID=$REACT_APP_GOOGLE_CLIENT_ID
+ENV CI=true
+RUN npm run build
+
 # Backend: build the server and migrate binaries, then ship them on a small
 # runtime image. The migrations and seed SQL are copied in because the migrate
 # binary reads them from disk at runtime.
@@ -20,6 +35,7 @@ WORKDIR /app
 
 COPY --from=build /out/server /out/migrate /out/admin /usr/local/bin/
 COPY migrations ./migrations
+COPY --from=web /web/build ./web
 
 # Uploads are bind-mounted in compose; create it so the server can write even
 # when no volume is attached.

@@ -25,6 +25,8 @@ type ServerConfig struct {
 	Environment    string
 	Host           string
 	AllowedOrigins []string
+	// StaticDir, when set, is a built frontend served by this same server.
+	StaticDir string
 }
 
 type DatabaseConfig struct {
@@ -77,6 +79,7 @@ func Load() (*Config, error) {
 			Environment:    getEnv("ENVIRONMENT", "development"),
 			Host:           getEnv("HOST", "localhost"),
 			AllowedOrigins: getEnvAsSlice("ALLOWED_ORIGINS", []string{"http://localhost:3000", "http://localhost:3001"}),
+			StaticDir:      getEnv("STATIC_DIR", ""),
 		},
 		Database: DatabaseConfig{
 			URL: getEnv("DATABASE_URL", "postgres://lostfound_user:lostfound_password@localhost:5432/lostfound?sslmode=disable"),

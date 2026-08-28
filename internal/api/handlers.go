@@ -152,6 +152,11 @@ func (h *Handler) GetBuildings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if buildings == nil {
+		// A nil slice marshals to JSON null; clients iterate these collections,
+		// so an empty result must serialise as [].
+		buildings = []database.Building{}
+	}
 	writeJSON(w, http.StatusOK, database.BuildingsResponse{Buildings: buildings})
 }
 
@@ -211,6 +216,9 @@ func (h *Handler) GetLostFoundAreas(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if areas == nil {
+		areas = []database.LostFoundArea{}
+	}
 	writeJSON(w, http.StatusOK, database.LostFoundAreasResponse{Areas: areas})
 }
 
@@ -228,6 +236,9 @@ func (h *Handler) GetLostFoundAreasByBuilding(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if areas == nil {
+		areas = []database.LostFoundArea{}
+	}
 	writeJSON(w, http.StatusOK, database.LostFoundAreasResponse{Areas: areas})
 }
 

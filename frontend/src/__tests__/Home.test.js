@@ -56,3 +56,17 @@ test('tolerates a malformed response without crashing', async () => {
   await waitFor(() => expect(postsAPI.search).toHaveBeenCalled());
   expect(screen.getByTestId('map')).toBeInTheDocument();
 });
+
+test('renders on an empty database, where the API returns null collections', async () => {
+  // A nil Go slice marshals to JSON null. Before this was guarded, .map() on
+  // null threw during render, unmounted the tree, and every fresh deployment
+  // served a blank page.
+  postsAPI.search.mockResolvedValue({ success: true, data: { posts: null, total: 0 } });
+  buildingsAPI.getAll.mockResolvedValue({ success: true, data: { buildings: null } });
+  areasAPI.getAll.mockResolvedValue({ success: true, data: { areas: null } });
+
+  renderHome();
+  await waitFor(() => expect(postsAPI.search).toHaveBeenCalled());
+  expect(screen.getByTestId('map')).toBeInTheDocument();
+  expect(screen.getByText(/Campus Map/)).toBeInTheDocument();
+});

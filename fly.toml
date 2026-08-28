@@ -1,0 +1,54 @@
+# Fly.io configuration for the API, which also serves the built frontend.
+#
+# The database is a separate Fly app (see fly.db.toml) reachable over the
+# private network. Deploy with:
+#
+#   fly deploy
+#
+# Secrets (DATABASE_URL, JWT_SECRET, GOOGLE_CLIENT_ID) are set with
+# `fly secrets set` and are never committed here.
+
+app = "lostfound-api"
+primary_region = "ewr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ENVIRONMENT = "production"
+  PORT = "8080"
+  # The SPA is baked into the image at /app/web and served by the Go server,
+  # so the whole app is one origin and needs no CORS entry.
+  STATIC_DIR = "/app/web"
+  UPLOAD_DIR = "/app/uploads"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  # Uploads live on a volume attached to this machine, so there is exactly one.
+  # Scaling out requires moving images to object storage first.
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 200
+    soft_limit = 150
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health"
+
+# Uploaded images and their thumbnails. Fly volumes are per-machine and are not
+# backed up automatically; snapshots are the safety net.
+[[mounts]]
+  source = "lostfound_uploads"
+  destination = "/app/uploads"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

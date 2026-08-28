@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -138,6 +139,15 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 
+	// Serve the built frontend when STATIC_DIR points at one. This lets a
+	// single deployment serve both the API and the SPA from one origin, which
+	// removes the need for a separate web server and for CORS entirely.
+	// Unset (the default) leaves the router untouched, so local development
+	// with `npm start` on its own port keeps working.
+	if cfg.Server.StaticDir != "" {
+		mountSPA(r, cfg.Server.StaticDir)
+	}
+
 	// Create server
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -211,4 +221,34 @@ func main() {
 	}
 
 	log.Println("Server exited")
+}
+
+// mountSPA serves a create-react-app build directory: real files are served as
+// they are, and anything else falls back to index.html so client-side routes
+// like /posts/{id} survive a page reload.
+func mountSPA(r chi.Router, dir string) {
+	if _, err := os.Stat(filepath.Join(dir, "index.html")); err != nil {
+		log.Printf("STATIC_DIR=%q has no index.html; not serving a frontend (%v)", dir, err)
+		return
+	}
+	log.Printf("Serving frontend from %s", dir)
+
+	files := http.FileServer(http.Dir(dir))
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		// API paths must 404 as API paths, not silently return the SPA shell.
+		if strings.HasPrefix(req.URL.Path, "/api/") || strings.HasPrefix(req.URL.Path, "/uploads/") {
+			http.NotFound(w, req)
+			return
+		}
+
+		// Serve the asset when it exists on disk; otherwise hand back the shell.
+		clean := filepath.Clean(strings.TrimPrefix(req.URL.Path, "/"))
+		if clean != "." && !strings.HasPrefix(clean, "..") {
+			if st, err := os.Stat(filepath.Join(dir, clean)); err == nil && !st.IsDir() {
+				files.ServeHTTP(w, req)
+				return
+			}
+		}
+		http.ServeFile(w, req, filepath.Join(dir, "index.html"))
+	})
 }

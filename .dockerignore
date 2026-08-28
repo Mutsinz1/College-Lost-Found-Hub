@@ -1,7 +1,11 @@
-node_modules
-build
-.git
-uploads
-bin
-main
+# Patterns are matched relative to the context root, so a bare "node_modules"
+# only excludes a top-level one. The ** prefix is what actually excludes
+# frontend/node_modules -- 278MB that was otherwise uploaded on every build.
+**/node_modules
+**/build
+**/.git
+**/uploads
+**/bin
+/main
 *.patch
+**/.DS_Store

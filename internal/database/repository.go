@@ -57,7 +57,9 @@ func (r *Repository) GetBuildings(ctx context.Context) ([]Building, error) {
 	}
 	defer rows.Close()
 
-	var buildings []Building
+	// Initialised, not nil: a nil slice marshals to JSON null, and the frontend
+	// calls .map() on these. An empty database must yield [] rather than null.
+	buildings := []Building{}
 	for rows.Next() {
 		var building Building
 		err := rows.Scan(
@@ -163,7 +165,7 @@ func (r *Repository) GetLostFoundAreas(ctx context.Context) ([]LostFoundArea, er
 	}
 	defer rows.Close()
 
-	var areas []LostFoundArea
+	areas := []LostFoundArea{}
 	for rows.Next() {
 		var area LostFoundArea
 		var building Building
@@ -218,7 +220,7 @@ func (r *Repository) GetLostFoundAreasByBuilding(ctx context.Context, buildingID
 	}
 	defer rows.Close()
 
-	var areas []LostFoundArea
+	areas := []LostFoundArea{}
 	for rows.Next() {
 		var area LostFoundArea
 		var building Building
@@ -524,7 +526,7 @@ func (r *Repository) SearchPosts(ctx context.Context, req SearchPostsRequest) (*
 	}
 	defer rows.Close()
 
-	var posts []Post
+	posts := []Post{}
 	for rows.Next() {
 		var post Post
 		err := rows.Scan(
@@ -836,7 +838,7 @@ func (r *Repository) GetInteractionsByPost(ctx context.Context, postID uuid.UUID
 	}
 	defer rows.Close()
 
-	var interactions []Interaction
+	interactions := []Interaction{}
 	for rows.Next() {
 		var interaction Interaction
 		if err := rows.Scan(

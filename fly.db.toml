@@ -1,0 +1,32 @@
+# Postgres + PostGIS for the Lost & Found API.
+#
+# Fly's own Postgres offering is not used here: the schema requires the PostGIS
+# extension, which has to be present in the image. This runs the same
+# postgis/postgis image the project is developed and tested against.
+#
+#   fly deploy --config fly.db.toml --image postgis/postgis:15-3.3
+#
+# There is no [http_service]: this app is reachable only over the private
+# network, as lostfound-db.internal:5432.
+
+app = "lostfound-db"
+primary_region = "ewr"
+
+[env]
+  POSTGRES_DB = "lostfound"
+  POSTGRES_USER = "lostfound_user"
+  # The official image refuses to initialise into a volume root that already
+  # contains lost+found, so keep the cluster in a subdirectory.
+  PGDATA = "/var/lib/postgresql/data/pgdata"
+
+[[mounts]]
+  source = "pgdata"
+  destination = "/var/lib/postgresql/data"
+
+# No [[services]]: this app is never exposed to the public internet. Fly's
+# private network (6PN) reaches port 5432 directly via .internal DNS, and a
+# public service definition would put the database behind the edge proxy.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
